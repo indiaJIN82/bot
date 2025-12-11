@@ -283,7 +283,7 @@ async def season(ctx):
     data = await load_data()
     await ctx.reply(f"シーズン: {data['season']['year']}年 / 第{data['season']['week']}週")
 
-# --------------- レース開催タスク ---------------
+# --------------- レース開催タスク（毎日開催に変更） ---------------
 
 @tasks.loop(hours=24)
 async def daily_race_task():
@@ -327,39 +327,41 @@ async def daily_race_task():
                 h["history"].append({
                     "year": data["season"]["year"],
                     "week": current_week,
-                    "race": race_info
-
-                results.append({
-                    "pos": pos, "horse_id": hid, "horse_name": hname,
-                    "owner": owner, "score": round(score, 2), "prize": prize
+                    "race": race_info["name"],
+                    "pos": pos,
+                    "score": round(score, 2),
+                    "prize": prize
                 })
 
-            # レース履歴
-            data["races"].append({
-                "year": data["season"]["year"],
-                "week": current_week,
-                "name": race_info["name"],
-                "distance": race_info["distance"],
-                "track": race_info["track"],
-                "results": results
+            results.append({
+                "pos": pos, "horse_id": hid, "horse_name": hname,
+                "owner": owner, "score": round(score, 2), "prize": prize
             })
 
-            # 今週のエントリー消去
-            data.get("pending_entries", {}).pop(str(current_week), None)
+        # レース履歴
+        data["races"].append({
+            "year": data["season"]["year"],
+            "week": current_week,
+            "name": race_info["name"],
+            "distance": race_info["distance"],
+            "track": race_info["track"],
+            "results": results
+        })
 
-            # 次週へ
-            data["season"]["week"] += 1
-            if data["season"]["week"] > 52:
-                data["season"]["week"] = 1
-                data["season"]["year"] += 1
+        # 今週のエントリー消去
+        data.get("pending_entries", {}).pop(str(current_week), None)
 
-            await save_data(data)
+        # 次週へ（30日でリセット）
+        data["season"]["week"] += 1
+        if data["season"]["week"] > 30:
+            data["season"]["week"] = 1
+            data["season"]["year"] += 1
 
-            # ここでは特定チャンネルに送信せず、Botが起動中の全サーバーでコマンドベース運用を想定。
-            # 実運用では「告知チャンネルID」を設定してそこへpostするのが良い。
+        await save_data(data)
 
-@weekly_race_task.before_loop
-async def before_weekly_race_task():
+
+@daily_race_task.before_loop
+async def before_daily_race_task():
     await bot.wait_until_ready()
 
 # --------------- 管理系（任意） ---------------
@@ -382,7 +384,7 @@ async def resetchannel(ctx):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    weekly_race_task.start()
+    daily_race_task.start()
 
 if __name__ == "__main__":
     keep_alive()
