@@ -382,7 +382,6 @@ if data["season"]["week"] > days_in_month:
 
         await save_data(data)
 
-
 @daily_race_task.before_loop
 async def before_daily_race_task():
     await bot.wait_until_ready()
