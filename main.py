@@ -399,5 +399,9 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     weekly_race_task.start()
 
+    if __name__ == "__main__":
     keep_alive()
-    bot.run(de02a498f96c48cad5d74bf2e5b172b3b459a9dc991a0e6242b156a2b6c20d13)
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        raise RuntimeError("DISCORD_TOKEN is not set")
+    bot.run(token)
