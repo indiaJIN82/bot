@@ -48,7 +48,7 @@ PRE_ANNOUNCE_TIME_JST = time(hour=18, minute=0, tzinfo=JST)
 
 # 最大保有頭数 
 MAX_HORSES_PER_OWNER = 5
-# 👈 修正: 1週間に同一オーナーがエントリーできる最大頭数
+# 1週間に同一オーナーがエントリーできる最大頭数
 MAX_ENTRIES_PER_WEEK = 4 
 
 async def load_data():
@@ -186,6 +186,13 @@ def prize_pool_for_g1():
     total = 200_000
     return total, [0.55, 0.2, 0.12, 0.08, 0.05]
 
+def prize_pool_for_lower():
+    """下級レースの賞金設定"""
+    total = 10000 
+    # 1着 10000, 2着 5000, 3着 2000
+    return total, [1.0, 0.5, 0.2] 
+
+
 def progress_growth(horse):
     g = horse["stats"]["growth"]
     horse["stats"]["growth"] = min(100, g + random.randint(1, 3))
@@ -197,13 +204,19 @@ def generate_commentary(race_info, results, entries_count):
     winner = results[0]
     second = results[1] if len(results) > 1 else None
     
-    commentary = [
-        f"さあ、ゴール！ 激しい叩き合いを制したのは、見事な走りを見せた**{winner['horse_name']}**だ！",
-        f"最後の直線！ **{winner['horse_name']}**が力強い末脚で一気に抜け出し、優勝の栄冠に輝きました！",
-    ]
+    if race_info['name'].startswith("GⅠ"):
+        commentary = [
+            f"さあ、ゴール！ 激しい叩き合いを制したのは、見事な走りを見せた**{winner['horse_name']}**だ！",
+            f"最後の直線！ **{winner['horse_name']}**が力強い末脚で一気に抜け出し、優勝の栄冠に輝きました！",
+        ]
+    else: # 下級レース用コメント
+        # 下級レース用の特別なコメント
+        commentary = [
+            f"最終レース、**{winner['horse_name']}**が混戦を抜け出し、見事一発逆転を決めました！",
+            f"力の違いを見せつけた**{winner['horse_name']}**が、最後の賞金を獲得しました！",
+        ]
     
-    # スコアが results に含まれている前提で比較
-    if second and winner['score'] - second['score'] < 5:
+    if second and winner['score'] - second['score'] < 5 and race_info['name'].startswith("GⅠ"):
         commentary.append(
             f"大接戦！ ほとんど差がありませんでしたが、僅かに**{winner['horse_name']}**の鼻がゴール板を先に通過！ {second['horse_name']}は惜しくも2着！"
         )
@@ -219,25 +232,33 @@ async def announce_race_results(data, race_info, results, week, year, channel, e
     
     commentary = generate_commentary(race_info, results, entries_count) 
     
+    # GⅠと下級レースでタイトルを変更
+    if race_info['name'].startswith("GⅠ"):
+         title = f"🎉 レース結果速報 - {year}年 第{week}週 🎉"
+         race_line = f"**【{race_info['name']}】** 距離:{race_info['distance']}m / 馬場:{race_info['track']}"
+    else:
+         title = f"📢 下級レース結果 - {year}年 第{week}週"
+         # レース名と発走時刻を固定
+         race_line = f"**【{race_info['name']}】** 距離:{race_info['distance']}m / 馬場:{race_info['track']} / **{entries_count}頭立て**"
+    
     msg_lines = [
-        f"🎉 レース結果速報 - {year}年 第{week}週 🎉",
-        f"**【GⅠ {race_info['name']}】** 距離:{race_info['distance']}m / 馬場:{race_info['track']}",
+        title,
+        race_line,
         "---------------------",
         f"🎙️ *{commentary}*", 
         "---------------------",
     ]
     
-    for r in results:
-        # スコアは小数点第2位まで表示
-        msg_lines.append(
-            f"{r['pos']}着 **{r['horse_name']}** "
-            f"(オーナー:<@{r['owner']}>) "
-            f"賞金:{r['prize']} (スコア:{r['score']:.2f})"
-        )
-        
-    for r in results[5:]:
-        msg_lines.append(f"{r['pos']}着 **{r['horse_name']}** (オーナー:<@{r['owner']}>)")
+    # GⅠは5着まで賞金、下級レースは3着まで賞金
+    prize_count = 5 if race_info['name'].startswith("GⅠ") else 3
 
+    for r in results:
+        line = f"{r['pos']}着 **{r['horse_name']}** (オーナー:<@{r['owner']}>)"
+        if r['pos'] <= prize_count:
+             line += f" 賞金:{r['prize']} (スコア:{r['score']:.2f})"
+        
+        msg_lines.append(line)
+        
     await channel.send("\n".join(msg_lines))
 
 # ----------------- コマンド -----------------
@@ -253,7 +274,6 @@ async def resetdata(ctx):
         await ctx.reply("既にリセット確認待ちです。`!confirmreset` で確定するか、しばらく待ってキャンセルしてください。")
         return
 
-    # リセット待ち状態を設定し、タイムスタンプを保存
     PENDING_RESETS[user_id] = datetime.now(JST) 
     
     await ctx.reply(
@@ -288,6 +308,7 @@ async def confirmreset(ctx):
 @bot.command(name="setannounce", help="[管理] レース結果を告知するチャンネルを設定します")
 @commands.has_permissions(administrator=True)
 async def setannounce(ctx, channel: discord.TextChannel):
+    # 二重返信対策として、load_data前にctx.sendを使うのを避けます
     data = await load_data()
     data["announce_channel"] = channel.id
     await save_data(data)
@@ -402,7 +423,6 @@ async def entry(ctx, horse_id: str):
         await ctx.reply("すでに今週のレースにエントリー済みです。")
         return
 
-    # 🐴 修正箇所: 同一オーナーのエントリー数チェック
     owner_entries = [hid for hid in pending[week_key] if data['horses'][hid]['owner'] == uid]
     if len(owner_entries) >= MAX_ENTRIES_PER_WEEK:
          await ctx.reply(f"今週のエントリーは**{MAX_ENTRIES_PER_WEEK}頭**が上限です。すでに{len(owner_entries)}頭がエントリー済みです。")
@@ -518,30 +538,121 @@ async def racehistory(ctx, horse_id: str):
         )
     await ctx.reply("\n".join(lines))
 
+# ----------------- 下級レース処理関数 -----------------
+
+async def run_lower_race_logic(data, horses_not_entered, current_week, year, channel):
+    """
+    GⅠに出走しなかった馬を対象に下級レースを自動開催する
+    """
+    
+    entries = [hid for hid in horses_not_entered if data["horses"].get(hid)]
+    entries_count = len(entries)
+    
+    if entries_count < 2:
+        if channel:
+             # メッセージをシンプルに修正
+             await channel.send("ℹ️ 下級レースはエントリー馬が2頭未満のため開催されませんでした。")
+        return
+
+    # 下級レースのランダムな設定
+    random_distance = random.choice([1200, 1400, 1600, 1800, 2000, 2200, 2400])
+    random_track = random.choice(["芝", "ダート"])
+    
+    race_info = {
+        "name": "一発逆転！京都ファイナルレース", # レース名を固定
+        "distance": random_distance,
+        "track": random_track
+    }
+    
+    total, ratios = prize_pool_for_lower() # 下級レースの賞金プール
+
+    field = []
+    for hid in entries:
+        horse = data["horses"].get(hid)
+        score = calc_race_score(horse, race_info["distance"], race_info["track"])
+        field.append((hid, horse["name"], horse["owner"], score))
+
+    field.sort(key=lambda x: x[3], reverse=True)
+
+    results = []
+    for idx, (hid, hname, owner, score) in enumerate(field):
+        pos = idx + 1
+        prize = 0
+        
+        # 3着まで賞金 (ratiosのインデックス0, 1, 2)
+        if idx < len(ratios):
+            if idx == 0: prize = 10000
+            elif idx == 1: prize = 5000
+            elif idx == 2: prize = 2000
+
+        # オーナーデータ更新
+        o = data["owners"].get(owner)
+        if o:
+            o["balance"] = o.get("balance", 0) + prize
+            if pos == 1:
+                o["wins"] = o.get("wins", 0) + 1
+
+        # 馬データ更新
+        h = data["horses"].get(hid)
+        if h:
+            if pos == 1:
+                h["wins"] = h.get("wins", 0) + 1
+            h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(1, 3)) # 疲労はGⅠより少なめに
+            progress_growth(h)
+            
+            h["history"].append({
+                "year": year,
+                "week": current_week,
+                "race": race_info["name"],
+                "pos": pos,
+                "score": round(score, 2),
+                "prize": prize
+            })
+
+        results.append({
+            "pos": pos, "horse_id": hid, "horse_name": hname,
+            "owner": owner, "score": round(score, 2), "prize": prize
+        })
+
+    # レース履歴
+    data["races"].append({
+        "year": year,
+        "week": current_week,
+        "name": race_info["name"],
+        "distance": race_info["distance"],
+        "track": race_info["track"],
+        "results": results
+    })
+
+    # 告知チャンネルに結果を投稿
+    if channel:
+        await announce_race_results(data, race_info, results, current_week, year, channel, entries_count)
 
 # --------------- レース処理関数（タスクとforceraceで共通利用） ---------------
 
 async def run_race_logic(data, is_forced=False):
     """
-    レースを実行し、結果をデータに保存する。
-    is_forced=True の場合は週を進めない
+    GⅠレースを実行し、その後下級レースを実行する
     """
     current_week = data["season"]["week"]
     current_week_str = str(current_week)
     
     race_info = data["schedule"].get(current_week_str)
-    entries = data.get("pending_entries", {}).get(current_week_str, [])
-    entries_count = len(entries) 
+    g1_entries = data.get("pending_entries", {}).get(current_week_str, [])
+    g1_entries_count = len(g1_entries) 
     
     channel = None
     channel_id = data.get("announce_channel")
     if channel_id:
         channel = bot.get_channel(channel_id)
 
-    if race_info and entries_count >= 2:
+    # ------------------ 1. GⅠレースの実行 ------------------
+    
+    g1_held = False
+    if race_info and g1_entries_count >= 2:
         total, ratios = prize_pool_for_g1()
         field = []
-        for hid in entries:
+        for hid in g1_entries:
             horse = data["horses"].get(hid)
             if not horse:
                 continue
@@ -593,20 +704,32 @@ async def run_race_logic(data, is_forced=False):
             "results": results
         })
 
+        # 今週のGⅠエントリー消去
         data.get("pending_entries", {}).pop(current_week_str, None)
 
         if channel:
-            await announce_race_results(data, race_info, results, current_week, data['season']['year'], channel, entries_count)
+            await announce_race_results(data, race_info, results, current_week, data['season']['year'], channel, g1_entries_count)
         
-        race_held = True
+        g1_held = True
 
-    elif race_info and entries_count < 2:
+    elif race_info and g1_entries_count < 2:
         if channel:
             await channel.send(f"⚠️ 今週のGⅠ「{race_info['name']}」はエントリー馬が2頭未満のため開催されませんでした。")
-        race_held = False
-        
-    else:
-        race_held = False
+    
+    # ------------------ 2. 下級レースの実行 ------------------
+    
+    # GⅠにエントリーした馬のIDリスト
+    entered_horses_id = set(g1_entries) 
+    # 全ての現役馬のIDリスト
+    all_horses_id = set(data["horses"].keys()) 
+    
+    # GⅠにエントリーしなかった馬のIDリスト (疲労で出走不可の馬も含む)
+    horses_not_entered = list(all_horses_id - entered_horses_id)
+    
+    # 下級レースの実行
+    await run_lower_race_logic(data, horses_not_entered, current_week, data['season']['year'], channel)
+
+    # ------------------ 3. 週の進行 ------------------
 
     if not is_forced:
         data["season"]["week"] += 1
@@ -618,7 +741,7 @@ async def run_race_logic(data, is_forced=False):
                 data["season"]["year"] += 1
 
     await save_data(data)
-    return race_held, race_info, entries_count
+    return g1_held, race_info, g1_entries_count
 
 # --------------- レース開催タスク（毎日19:00 JSTに実行） ---------------
 
@@ -677,11 +800,11 @@ async def forcerace(ctx):
     race_held, race_info, entries_count = await run_race_logic(data, is_forced=True)
     
     if race_held:
-        await ctx.send("レース処理が完了しました。結果は告知チャンネルをご確認ください。")
+        await ctx.send("GⅠおよび下級レースの処理が完了しました。結果は告知チャンネルをご確認ください。")
     elif race_info:
-        await ctx.send("エントリー馬が2頭未満のためレースは開催されませんでした。")
+        await ctx.send("GⅠエントリー馬が2頭未満でした。下級レースの結果と合わせて告知チャンネルをご確認ください。")
     else:
-        await ctx.send("今週はレースが予定されていませんでした。")
+        await ctx.send("今週はレースが予定されていませんでした。下級レースの結果と合わせて告知チャンネルをご確認ください。")
 
 
 # --------------- 起動 ---------------
