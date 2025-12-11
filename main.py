@@ -385,5 +385,5 @@ async def on_ready():
 if __name__ == "__main__":
     token = os.getenv("de02a498f96c48cad5d74bf2e5b172b3b459a9dc991a0e6242b156a2b6c20d13")
     if not token:
-        raise RuntimeError("環境変数 DISCORD_TOKEN にBotトークンを設定してください。")
+        raise RuntimeError("de02a498f96c48cad5d74bf2e5b172b3b459a9dc991a0e6242b156a2b6c20d13")
     bot.run(de02a498f96c48cad5d74bf2e5b172b3b459a9dc991a0e6242b156a2b6c20d13)
