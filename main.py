@@ -369,10 +369,8 @@ async def before_daily_race_task():
 @bot.command(name="forcerace", help="[管理] 今週のレースを即時開催します")
 @commands.has_permissions(administrator=True)
 async def forcerace(ctx):
-    # 管理者向け：テストや小規模運営で便利
     await ctx.reply("今週のレース開催を試みます（条件が揃っていれば実行）。")
-    # タスクロジックを流用
-    await weekly_race_task.__call__()
+    await daily_race_task.__call__()
 
 @bot.command(name="resetchannel", help="[管理] 告知チャンネルを設定（未実装のプレースホルダ）")
 @commands.has_permissions(administrator=True)
