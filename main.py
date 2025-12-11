@@ -8,6 +8,23 @@ import discord
 from discord.ext import commands, tasks
 import aiofiles
 
+from flask import Flask
+from threading import Thread
+
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run():
+    app.run(host='0.0.0.0', port=10000)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+
 # --------------- 基本設定 ---------------
 
 INTENTS = discord.Intents.default()
@@ -382,4 +399,5 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     weekly_race_task.start()
 
+    keep_alive()
     bot.run(de02a498f96c48cad5d74bf2e5b172b3b459a9dc991a0e6242b156a2b6c20d13)
