@@ -3,11 +3,11 @@ import json
 import random
 import asyncio
 import calendar
+import sqlite3
 from datetime import datetime, timezone, timedelta, time 
 
 import discord
 from discord.ext import commands, tasks
-import aiofiles
 
 from flask import Flask
 from threading import Thread
@@ -34,7 +34,9 @@ INTENTS = discord.Intents.default()
 INTENTS.message_content = True
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
-DATA_FILE = "racing_data.json"
+# SQLiteデータベースファイル名
+DB_FILE = "racing_db.sqlite" 
+
 JST = timezone(timedelta(hours=9))
 
 # 2段階認証用の待機状態を保持 (ファイルには保存しないインメモリデータ)
@@ -47,7 +49,7 @@ PRE_ANNOUNCE_TIME_JST = time(hour=18, minute=0, tzinfo=JST)
 # Bot馬用のオーナーID (DiscordのUIDとは異なる、集計用の特殊ID)
 BOT_OWNER_ID = "0" 
 
-# --------------- ユーティリティ ---------------
+# --------------- ユーティリティ & SQLite接続 ---------------
 
 # 最大保有頭数 
 MAX_HORSES_PER_OWNER = 5
@@ -56,62 +58,91 @@ MAX_ENTRIES_PER_WEEK = 4
 # GⅠの最低出走頭数（これに満たない場合Bot馬を補充）
 MIN_G1_FIELD = 10 
 
-async def load_data():
-    """データをロードし、存在しない場合は初期データを作成して保存する"""
-    default_data = {
-        "horses": {},
-        "owners": {},
-        "races": [],
-        "schedule": default_schedule(),
-        "rankings": {"prize": {}, "wins": {}, "stable": {}},
-        "announce_channel": None,
-        "pending_entries": {}
-    }
+def get_db_connection():
+    """SQLiteデータベース接続を取得する"""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row # 列名でアクセスできるように設定
+    return conn
+
+def initialize_db():
+    """データベーステーブルを初期化する"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
     
-    if not os.path.exists(DATA_FILE):
+    # 馬テーブル
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS horses (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            owner_id TEXT,
+            stats_json TEXT,
+            age INTEGER,
+            fatigue INTEGER,
+            wins INTEGER,
+            history_json TEXT
+        )
+    """)
+    
+    # オーナーテーブル
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS owners (
+            id TEXT PRIMARY KEY,
+            horses_json TEXT,
+            balance INTEGER,
+            wins INTEGER
+        )
+    """)
+    
+    # シーズン情報テーブル (単一行管理)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS season (
+            key TEXT PRIMARY KEY,
+            year INTEGER,
+            month INTEGER,
+            week INTEGER,
+            announce_channel_id TEXT
+        )
+    """)
+    
+    # エントリーテーブル (毎週の出走登録)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pending_entries (
+            week_str TEXT PRIMARY KEY,
+            horse_id_list_json TEXT
+        )
+    """)
+    
+    # レース履歴テーブル
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS races_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            year INTEGER,
+            week INTEGER,
+            name TEXT,
+            distance INTEGER,
+            track TEXT,
+            results_json TEXT
+        )
+    """)
+    
+    # seasonテーブルの初期値設定
+    cursor.execute("SELECT * FROM season WHERE key = 'current_season'")
+    if cursor.fetchone() is None:
         today = datetime.now(JST)
-        current_week = ((today.day - 1) % 30) + 1
-        year = today.year
-        month = today.month
+        cursor.execute(
+            "INSERT INTO season VALUES (?, ?, ?, ?, ?)",
+            ('current_season', today.year, today.month, 1, '')
+        )
+        
+    conn.commit()
+    conn.close()
 
-        days_in_month = calendar.monthrange(year, month)[1]
-        if current_week > days_in_month:
-            current_week = 1
-            month += 1
-            if month > 12:
-                month = 1
-                year += 1
-        
-        default_data["season"] = {"year": year, "month": month, "week": current_week}
-        
-        async with aiofiles.open(DATA_FILE, "w") as f:
-            await f.write(json.dumps(default_data, ensure_ascii=False, indent=2))
-        return default_data
+# 起動時にDB初期化を実行
+initialize_db()
 
-    async with aiofiles.open(DATA_FILE, "r") as f:
-        text = await f.read()
-        data = json.loads(text)
-        
-        if "pending_entries" not in data:
-            data["pending_entries"] = {}
-        if "announce_channel" not in data:
-             data["announce_channel"] = None
-        
-        # 芝・ダート適性のデータ移行（既存の馬にも適性を付与）
-        for hid, horse in data["horses"].items():
-            if "turf_apt" not in horse["stats"]:
-                horse["stats"]["turf_apt"] = random.randint(50, 90)
-                horse["stats"]["dirt_apt"] = random.randint(50, 90)
-        
-        return data
-
-async def save_data(data):
-    """データをファイルに保存する"""
-    async with aiofiles.open(DATA_FILE, "w") as f:
-        await f.write(json.dumps(data, ensure_ascii=False, indent=2))
 
 def default_schedule():
-    """レーススケジュール定義（キーは文字列）"""
+    """レーススケジュール定義"""
     return {
         "1":  {"name": "京都金杯", "distance": 1600, "track": "芝"},
         "2":  {"name": "中山金杯", "distance": 2000, "track": "芝"},
@@ -144,6 +175,116 @@ def default_schedule():
         "29": {"name": "ホープフルS", "distance": 2000, "track": "芝"},
         "30": {"name": "有馬記念", "distance": 2500, "track": "芝"},
     }
+
+async def load_data():
+    """データベースからすべてのデータをメモリにロードする"""
+    data = {
+        "horses": {},
+        "owners": {},
+        "races": [], # DBに保存する前にセッション内で保持するリスト
+        "schedule": default_schedule(),
+        "rankings": {"prize": {}, "wins": {}, "stable": {}},
+        "announce_channel": None,
+        "pending_entries": {}
+    }
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        # 1. 馬データ (horses)
+        for row in cursor.execute("SELECT * FROM horses"):
+            horse_data = dict(row)
+            # JSON文字列を辞書/リストに変換
+            horse_data['stats'] = json.loads(horse_data.pop('stats_json'))
+            horse_data['history'] = json.loads(horse_data.pop('history_json'))
+            horse_data['owner'] = horse_data.pop('owner_id')
+            data["horses"][horse_data["id"]] = horse_data
+            
+        # 2. オーナーデータ (owners)
+        for row in cursor.execute("SELECT * FROM owners"):
+            owner_data = dict(row)
+            owner_data['horses'] = json.loads(owner_data.pop('horses_json'))
+            data["owners"][owner_data.pop('id')] = owner_data
+
+        # 3. シーズン情報 (season)
+        season_row = cursor.execute("SELECT * FROM season WHERE key = 'current_season'").fetchone()
+        if season_row:
+             data["season"] = {"year": season_row['year'], "month": season_row['month'], "week": season_row['week']}
+             # 'announce_channel_id'が空文字列の場合もあるため処理
+             channel_id_str = season_row['announce_channel_id']
+             if channel_id_str and channel_id_str.isdigit():
+                 data["announce_channel"] = int(channel_id_str)
+             else:
+                 data["announce_channel"] = None
+        
+        # 4. エントリー情報 (pending_entries)
+        for row in cursor.execute("SELECT * FROM pending_entries"):
+             data["pending_entries"][row['week_str']] = json.loads(row['horse_id_list_json'])
+
+    finally:
+        conn.close()
+        
+    return data
+
+async def save_data(data):
+    """メモリのデータをデータベースに保存する"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # 1. 馬データ (horses) の更新
+        # プレイヤー馬のデータを全て削除してから再挿入 (Bot馬は永続保存しない)
+        cursor.execute("DELETE FROM horses")
+        for horse in data["horses"].values():
+             if horse["owner"] != BOT_OWNER_ID:
+                 cursor.execute(
+                     """INSERT INTO horses VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (horse["id"], horse["name"], horse["owner"], json.dumps(horse["stats"]), 
+                      horse["age"], horse["fatigue"], horse["wins"], json.dumps(horse["history"]))
+                 )
+                 
+        # 2. オーナーデータ (owners) の更新
+        cursor.execute("DELETE FROM owners")
+        for uid, owner_data in data["owners"].items():
+             if uid != BOT_OWNER_ID:
+                 cursor.execute(
+                     """INSERT INTO owners VALUES (?, ?, ?, ?)""",
+                     (uid, json.dumps(owner_data["horses"]), owner_data["balance"], owner_data["wins"])
+                 )
+                 
+        # 3. シーズン情報 (season) の更新
+        cursor.execute(
+            """UPDATE season SET year=?, month=?, week=?, announce_channel_id=? WHERE key='current_season'""",
+            (data["season"]["year"], data["season"]["month"], data["season"]["week"], 
+             str(data.get("announce_channel", '')) if data.get("announce_channel") else '')
+        )
+        
+        # 4. エントリー情報 (pending_entries) の更新 (現在の週のエントリーのみ保存)
+        cursor.execute("DELETE FROM pending_entries")
+        current_week_str = str(data["season"]["week"])
+        if current_week_str in data["pending_entries"]:
+             cursor.execute(
+                 """INSERT INTO pending_entries VALUES (?, ?)""",
+                 (current_week_str, json.dumps(data["pending_entries"][current_week_str]))
+             )
+
+        # 5. レース履歴 (races) の追記
+        for race in data["races"]:
+             cursor.execute(
+                 """INSERT INTO races_history (year, week, name, distance, track, results_json) VALUES (?, ?, ?, ?, ?, ?)""",
+                 (race["year"], race["week"], race["name"], race["distance"], race["track"], json.dumps(race["results"]))
+             )
+        # セッション内で処理済みのレース履歴をクリア
+        data["races"] = [] 
+
+        conn.commit()
+    finally:
+        conn.close()
+
+# ... (中略：new_horse_id, new_bot_horse_id, generate_bot_horse, calc_race_score, 
+# prize_pool_for_g1, prize_pool_for_lower, progress_growth, generate_commentary, 
+# announce_race_results は論理変更がないため省略 - 以下の定義は前のコードからコピーして追加してください) ...
 
 def new_horse_id(data):
     """プレイヤー馬のID生成"""
@@ -320,6 +461,7 @@ async def announce_race_results(data, race_info, results, week, year, channel, e
         
     await channel.send("\n".join(msg_lines))
 
+
 # ----------------- コマンド -----------------
 
 @bot.command(name="resetdata", help="[管理] データファイルを初期化します（2段階認証が必要です）")
@@ -336,7 +478,7 @@ async def resetdata(ctx):
     PENDING_RESETS[user_id] = datetime.now(JST) 
     
     await ctx.reply(
-        "⚠️ **警告**: データファイルを初期化します。この操作は元に戻せません。\n"
+        "⚠️ **警告**: すべての馬、オーナー、シーズンデータを含むデータベースファイルを初期化します。この操作は元に戻せません。\n"
         "実行する場合は、**10秒以内**に `!confirmreset` と送信してください。"
     )
 
@@ -358,16 +500,18 @@ async def confirmreset(ctx):
         await ctx.reply("リセット確認の期限（10秒）が過ぎました。再度 `!resetdata` を実行してください。")
         return
 
-    if os.path.exists(DATA_FILE):
-        os.remove(DATA_FILE)
+    # データベースファイルを削除し、再初期化する
+    if os.path.exists(DB_FILE):
+        os.remove(DB_FILE)
     
-    await ctx.reply("✅ **データファイルを削除しました。** Botを再起動すると新しい状態で始まります。")
+    initialize_db()
+    
+    await ctx.reply("✅ **データベースを初期化しました。** 新しいシーズンが始まります。")
 
 
 @bot.command(name="setannounce", help="[管理] レース結果を告知するチャンネルを設定します")
 @commands.has_permissions(administrator=True)
 async def setannounce(ctx, channel: discord.TextChannel):
-    # 二重返信対策として、load_data前にctx.sendを使うのを避けます
     data = await load_data()
     data["announce_channel"] = channel.id
     await save_data(data)
@@ -430,8 +574,8 @@ async def retire(ctx, horse_id: str):
         return
     
     data["owners"][uid]["horses"].remove(horse_id)
-    # Bot馬を永続的に保存するわけではないため、プレイヤー馬を削除する際はhorsesから削除してOK
-    del data["horses"][horse_id]
+    # DBからは次回のsave_dataでDELETE→INSERTされる際に含まれなくなる
+    del data["horses"][horse_id] 
     
     await save_data(data)
     await ctx.reply(f"馬 **{horse['name']} (ID: {horse_id})** を引退させ、厩舎から削除しました。")
@@ -633,10 +777,6 @@ async def rank(ctx, category: str = "prize"):
 
 @bot.command(name="schedule", help="今週のGⅠ情報を表示します")
 async def schedule(ctx):
-    if not os.path.exists(DATA_FILE):
-        await ctx.reply("データがまだ初期化されていません。`!newhorse` コマンドを実行してデータを初期化してください。")
-        return
-        
     data = await load_data()
     week_str = str(data["season"]["week"])
     
@@ -664,7 +804,8 @@ async def racehistory(ctx, horse_id: str):
     if horse["owner"] == BOT_OWNER_ID:
         await ctx.reply("このコマンドでは協会生産馬の履歴は確認できません。")
         return
-
+    
+    # 馬のインメモリ履歴(history)を使用
     if not horse.get("history"):
         await ctx.reply(f"**{horse['name']}** はまだレースに出走していません。")
         return
@@ -677,7 +818,8 @@ async def racehistory(ctx, horse_id: str):
         )
     await ctx.reply("\n".join(lines))
 
-# ----------------- 下級レース処理関数 -----------------
+
+# ----------------- レース処理関数（タスクとforceraceで共通利用） -----------------
 
 async def run_lower_race_logic(data, horses_not_entered, current_week, year, channel):
     """
@@ -690,7 +832,6 @@ async def run_lower_race_logic(data, horses_not_entered, current_week, year, cha
     
     if entries_count < 2:
         if channel:
-             # メッセージをシンプルに修正
              await channel.send("ℹ️ 下級レースはエントリー馬が2頭未満のため開催されませんでした。")
         return
 
@@ -754,7 +895,7 @@ async def run_lower_race_logic(data, horses_not_entered, current_week, year, cha
             "owner": owner, "score": round(score, 2), "prize": prize
         })
 
-    # レース履歴
+    # レース履歴 (セッション内でのみ保持し、save_dataでDBに追記)
     data["races"].append({
         "year": year,
         "week": current_week,
@@ -767,8 +908,6 @@ async def run_lower_race_logic(data, horses_not_entered, current_week, year, cha
     # 告知チャンネルに結果を投稿
     if channel:
         await announce_race_results(data, race_info, results, current_week, year, channel, entries_count)
-
-# --------------- レース処理関数（タスクとforceraceで共通利用） ---------------
 
 async def run_race_logic(data, is_forced=False):
     """
@@ -798,14 +937,10 @@ async def run_race_logic(data, is_forced=False):
         # プレイヤー馬のエントリーが10頭に満たない場合、10頭になるまで補充
         if player_entries_count < MIN_G1_FIELD:
             
-            # プレイヤー馬のIDを結合してBot馬のIDの重複を避ける
             existing_ids = set(data["horses"].keys()) 
-            
-            # GⅠに出走させるBot馬の数
             num_bot_horses = MIN_G1_FIELD - player_entries_count
             
             for _ in range(num_bot_horses):
-                # Bot馬はデータファイルに永続保存しない（使い捨て）
                 bot_horse = generate_bot_horse(existing_ids)
                 bot_horses_to_add.append(bot_horse)
                 existing_ids.add(bot_horse["id"])
@@ -871,6 +1006,7 @@ async def run_race_logic(data, is_forced=False):
                     "owner": owner, "score": round(score, 2), "prize": prize
                 })
 
+            # レース履歴 (セッション内でのみ保持し、save_dataでDBに追記)
             data["races"].append({
                 "year": data["season"]["year"],
                 "week": current_week,
@@ -919,7 +1055,7 @@ async def run_race_logic(data, is_forced=False):
     await save_data(data)
     return g1_held, race_info, total_entries_count
 
-# --------------- レース開催タスク（毎日19:00 JSTに実行） ---------------
+# --------------- タスク（毎日実行） ---------------
 
 @tasks.loop(time=RACE_TIME_JST)
 async def daily_race_task():
@@ -931,8 +1067,6 @@ async def daily_race_task():
 @daily_race_task.before_loop
 async def before_daily_race_task():
     await bot.wait_until_ready()
-
-# --------------- 事前告知タスク（毎日18:00 JSTに実行） ---------------
 
 @tasks.loop(time=PRE_ANNOUNCE_TIME_JST)
 async def daily_pre_announcement_task():
@@ -956,7 +1090,7 @@ async def daily_pre_announcement_task():
             f"🔔 **【出走締切間近のお知らせ】** 🔔\n"
             f"現在のシーズン: {data['season']['year']}年 第{current_week}週\n"
             f"本日19:00 (JST) 開催のGⅠ「**{race_info['name']}**」の出走登録は間もなく締め切られます！\n"
-            f"現在のプレイヤーエントリー数: **{len(entries)}**頭 (10頭に満たない場合はBot馬が補充されます)\n"
+            f"現在のプレイヤーエントリー数: **{len(entries)}**頭 ({MIN_G1_FIELD}頭に満たない場合はBot馬が補充されます)\n"
             f"出走登録は `!entry <ID>` コマンドで！"
         )
         
@@ -969,6 +1103,7 @@ async def before_daily_pre_announcement_task():
 @bot.command(name="forcerace", help="[管理] 今週のレースを即時開催します（週は進めない）")
 @commands.has_permissions(administrator=True)
 async def forcerace(ctx):
+    
     data = await load_data()
     
     await ctx.reply("今週のレース開催を試みます（週は進行しません）。")
@@ -988,6 +1123,7 @@ async def forcerace(ctx):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    # DB初期化はファイルロード前に行うため、ここではタスク開始のみ
     daily_race_task.start()
     daily_pre_announcement_task.start() 
 
