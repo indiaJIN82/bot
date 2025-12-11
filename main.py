@@ -36,14 +36,31 @@ JST = timezone(timedelta(hours=9))
 
 # --------------- ユーティリティ ---------------
 
+import calendar
+
 async def load_data():
     if not os.path.exists(DATA_FILE):
+        today = datetime.now(JST)
+        # 現実の日付をそのまま週番号に
+        current_week = today.day
+        year = today.year
+        month = today.month
+
+        # 月末を超えたら翌月に繰り越し（calendarで月の日数を取得）
+        days_in_month = calendar.monthrange(year, month)[1]
+        if current_week > days_in_month:
+            current_week = 1
+            month += 1
+            if month > 12:
+                month = 1
+                year += 1
+
         async with aiofiles.open(DATA_FILE, "w") as f:
             await f.write(json.dumps({
                 "horses": {},
                 "owners": {},
                 "races": [],
-                "season": {"year": datetime.now(JST).year, "week": 1},
+                "season": {"year": year, "month": month, "week": current_week},
                 "schedule": default_schedule(),
                 "rankings": {"prize": {}, "wins": {}, "stable": {}}
             }, ensure_ascii=False))
