@@ -817,34 +817,3 @@ if __name__ == "__main__":
     if not token:
         raise RuntimeError("DISCORD_TOKEN is not set")
     bot.run(token)
-
-@daily_race_task.before_loop
-async def before_daily_race_task():
-    await bot.wait_until_ready()
-
-# --------------- 管理系（任意） ---------------
-
-@bot.command(name="forcerace", help="[管理] 今週のレースを即時開催します")
-@commands.has_permissions(administrator=True)
-async def forcerace(ctx):
-    await ctx.reply("今週のレース開催を試みます（条件が揃っていれば実行）。")
-    await daily_race_task.__call__()
-
-@bot.command(name="resetchannel", help="[管理] 告知チャンネルを設定（未実装のプレースホルダ）")
-@commands.has_permissions(administrator=True)
-async def resetchannel(ctx):
-    await ctx.reply("告知チャンネル機能はこの最小構成では未実装です。必要ならID保持とpostを追加してください。")
-
-# --------------- 起動 ---------------
-
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    daily_race_task.start()
-
-if __name__ == "__main__":
-    keep_alive()
-    token = os.getenv("DISCORD_TOKEN")
-    if not token:
-        raise RuntimeError("DISCORD_TOKEN is not set")
-    bot.run(token)
