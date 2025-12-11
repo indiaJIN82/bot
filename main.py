@@ -3,7 +3,6 @@ import json
 import random
 import asyncio
 import calendar
-# datetimeからtimeをインポート済みであることを確認
 from datetime import datetime, timezone, timedelta, time 
 
 import discord
@@ -45,9 +44,12 @@ PENDING_RESETS = {}
 RACE_TIME_JST = time(hour=19, minute=0, tzinfo=JST)
 PRE_ANNOUNCE_TIME_JST = time(hour=18, minute=0, tzinfo=JST) 
 
-# --------------- ユーティリティ (変更なし) ---------------
+# --------------- ユーティリティ ---------------
 
+# 最大保有頭数 
 MAX_HORSES_PER_OWNER = 5
+# 👈 修正: 1週間に同一オーナーがエントリーできる最大頭数
+MAX_ENTRIES_PER_WEEK = 4 
 
 async def load_data():
     """データをロードし、存在しない場合は初期データを作成して保存する"""
@@ -200,6 +202,7 @@ def generate_commentary(race_info, results, entries_count):
         f"最後の直線！ **{winner['horse_name']}**が力強い末脚で一気に抜け出し、優勝の栄冠に輝きました！",
     ]
     
+    # スコアが results に含まれている前提で比較
     if second and winner['score'] - second['score'] < 5:
         commentary.append(
             f"大接戦！ ほとんど差がありませんでしたが、僅かに**{winner['horse_name']}**の鼻がゴール板を先に通過！ {second['horse_name']}は惜しくも2着！"
@@ -225,6 +228,7 @@ async def announce_race_results(data, race_info, results, week, year, channel, e
     ]
     
     for r in results:
+        # スコアは小数点第2位まで表示
         msg_lines.append(
             f"{r['pos']}着 **{r['horse_name']}** "
             f"(オーナー:<@{r['owner']}>) "
@@ -268,7 +272,6 @@ async def confirmreset(ctx):
         await ctx.reply("リセット確認待ちの状態ではありません。先に `!resetdata` を実行してください。")
         return
 
-    # 待機状態から削除し、タイムアウトをチェック
     confirmation_time = PENDING_RESETS.pop(user_id)
     time_elapsed = (datetime.now(JST) - confirmation_time).total_seconds()
 
@@ -276,7 +279,6 @@ async def confirmreset(ctx):
         await ctx.reply("リセット確認の期限（10秒）が過ぎました。再度 `!resetdata` を実行してください。")
         return
 
-    # 実際のデータリセット処理を実行
     if os.path.exists(DATA_FILE):
         os.remove(DATA_FILE)
     
@@ -400,9 +402,10 @@ async def entry(ctx, horse_id: str):
         await ctx.reply("すでに今週のレースにエントリー済みです。")
         return
 
+    # 🐴 修正箇所: 同一オーナーのエントリー数チェック
     owner_entries = [hid for hid in pending[week_key] if data['horses'][hid]['owner'] == uid]
-    if len(owner_entries) > 0:
-         await ctx.reply(f"今週は既にあなたの馬**({data['horses'][owner_entries[0]]['name']})**がエントリー済みです。1オーナーにつき1頭までしかエントリーできません。")
+    if len(owner_entries) >= MAX_ENTRIES_PER_WEEK:
+         await ctx.reply(f"今週のエントリーは**{MAX_ENTRIES_PER_WEEK}頭**が上限です。すでに{len(owner_entries)}頭がエントリー済みです。")
          return
 
 
