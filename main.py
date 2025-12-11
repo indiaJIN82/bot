@@ -32,7 +32,6 @@ INTENTS.message_content = True
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
 DATA_FILE = "racing_data.json"
-# 時差調整（日本のGⅠ想定ならJST：UTC+9、ユーザーはラスベガスだが例ではJST週末に開催）
 JST = timezone(timedelta(hours=9))
 
 # --------------- ユーティリティ ---------------
@@ -41,9 +40,9 @@ async def load_data():
     if not os.path.exists(DATA_FILE):
         async with aiofiles.open(DATA_FILE, "w") as f:
             await f.write(json.dumps({
-                "horses": {},         # horse_id: {...}
-                "owners": {},         # user_id: {"horses":[ids], "balance": int}
-                "races": [],          # 過去レース履歴
+                "horses": {},
+                "owners": {},
+                "races": [],
                 "season": {"year": datetime.now(JST).year, "week": 1},
                 "schedule": default_schedule(),
                 "rankings": {"prize": {}, "wins": {}, "stable": {}}
@@ -57,21 +56,38 @@ async def save_data(data):
         await f.write(json.dumps(data, ensure_ascii=False, indent=2))
 
 def default_schedule():
-    # 週次GⅠの簡易サンプル（年52週を想定し、主要レースを抜粋）
-    # 実運用では年次テンプレを細かく設定して置換可能
+    # 1か月＝30日周期の簡易GⅠスケジュール
     return {
-        # week_number: race_name, distance(m), track_type
-        1: {"name": "フェアリーS", "distance": 1600, "track": "芝"},
-        5: {"name": "東京新聞杯", "distance": 1600, "track": "芝"},
-        12: {"name": "高松宮記念", "distance": 1200, "track": "芝"},
-        17: {"name": "天皇賞（春）", "distance": 3200, "track": "芝"},
-        21: {"name": "日本ダービー", "distance": 2400, "track": "芝"},
-        27: {"name": "宝塚記念", "distance": 2200, "track": "芝"},
-        39: {"name": "スプリンターズS", "distance": 1200, "track": "芝"},
-        43: {"name": "菊花賞", "distance": 3000, "track": "芝"},
-        47: {"name": "ジャパンカップ", "distance": 2400, "track": "芝"},
-        50: {"name": "チャンピオンズC", "distance": 1800, "track": "ダート"},
-        52: {"name": "有馬記念", "distance": 2500, "track": "芝"},
+        1:  {"name": "京都金杯", "distance": 1600, "track": "芝"},
+        2:  {"name": "中山金杯", "distance": 2000, "track": "芝"},
+        3:  {"name": "フェアリーS", "distance": 1600, "track": "芝"},
+        4:  {"name": "京成杯", "distance": 2000, "track": "芝"},
+        5:  {"name": "根岸S", "distance": 1400, "track": "ダート"},
+        6:  {"name": "東京新聞杯", "distance": 1600, "track": "芝"},
+        7:  {"name": "共同通信杯", "distance": 1800, "track": "芝"},
+        8:  {"name": "フェブラリーS", "distance": 1600, "track": "ダート"},
+        9:  {"name": "高松宮記念", "distance": 1200, "track": "芝"},
+        10: {"name": "大阪杯", "distance": 2000, "track": "芝"},
+        11: {"name": "桜花賞", "distance": 1600, "track": "芝"},
+        12: {"name": "皐月賞", "distance": 2000, "track": "芝"},
+        13: {"name": "天皇賞（春）", "distance": 3200, "track": "芝"},
+        14: {"name": "NHKマイルC", "distance": 1600, "track": "芝"},
+        15: {"name": "日本ダービー", "distance": 2400, "track": "芝"},
+        16: {"name": "安田記念", "distance": 1600, "track": "芝"},
+        17: {"name": "宝塚記念", "distance": 2200, "track": "芝"},
+        18: {"name": "スプリンターズS", "distance": 1200, "track": "芝"},
+        19: {"name": "秋華賞", "distance": 2000, "track": "芝"},
+        20: {"name": "菊花賞", "distance": 3000, "track": "芝"},
+        21: {"name": "天皇賞（秋）", "distance": 2000, "track": "芝"},
+        22: {"name": "エリザベス女王杯", "distance": 2200, "track": "芝"},
+        23: {"name": "マイルCS", "distance": 1600, "track": "芝"},
+        24: {"name": "ジャパンカップ", "distance": 2400, "track": "芝"},
+        25: {"name": "チャンピオンズC", "distance": 1800, "track": "ダート"},
+        26: {"name": "阪神JF", "distance": 1600, "track": "芝"},
+        27: {"name": "朝日杯FS", "distance": 1600, "track": "芝"},
+        28: {"name": "東京大賞典", "distance": 2000, "track": "ダート"},
+        29: {"name": "ホープフルS", "distance": 2000, "track": "芝"},
+        30: {"name": "有馬記念", "distance": 2500, "track": "芝"},
     }
 
 def new_horse_id(data):
@@ -81,14 +97,11 @@ def new_horse_id(data):
     return base
 
 def calc_race_score(horse, distance, track):
-    # ステータス：speed, stamina, temper(気性), growth(成長)
-    # 距離適性とトラックタイプ適性を反映（超簡易モデル）
     speed = horse["stats"]["speed"]
     stamina = horse["stats"]["stamina"]
     temper = horse["stats"]["temper"]
     growth = horse["stats"]["growth"]
 
-    # 距離補正：長距離はスタミナ比重、短距離はスピード比重
     if distance <= 1400:
         base = speed * 0.7 + stamina * 0.3
     elif distance <= 2200:
@@ -96,16 +109,12 @@ def calc_race_score(horse, distance, track):
     else:
         base = speed * 0.3 + stamina * 0.7
 
-    # トラック補正（ダートは気性影響やや強め、芝は素の能力寄り）
     if track == "ダート":
         base *= (0.95 + (temper / 100) * 0.1)
-    else:  # 芝
+    else:
         base *= (1.0 + (growth / 100) * 0.05)
 
-    # ランダム要素（展開・馬場・スタートなど）
     rand = random.uniform(0.85, 1.15)
-
-    # コンディション（簡易：疲労度で減衰）
     fatigue = horse.get("fatigue", 0)
     cond = max(0.75, 1.0 - (fatigue * 0.02))
 
@@ -113,13 +122,10 @@ def calc_race_score(horse, distance, track):
     return score
 
 def prize_pool_for_g1():
-    # GⅠ想定の賞金（簡易）
-    # 1着〜5着：比率配分
-    total = 200_000  # 仮想通貨（ゲーム内）
+    total = 200_000
     return total, [0.55, 0.2, 0.12, 0.08, 0.05]
 
 def progress_growth(horse):
-    # 走るたびに成長力が少しずつ伸びる（上限）
     g = horse["stats"]["growth"]
     horse["stats"]["growth"] = min(100, g + random.randint(1, 3))
 
@@ -280,69 +286,48 @@ async def season(ctx):
 # --------------- レース開催タスク ---------------
 
 @tasks.loop(hours=24)
-async def weekly_race_task():
-    # 週一回（土曜 21:00 JST）にレース開催
-    # 実運用：cron相当を自作。簡易的に毎日チェックし、開催条件に合致したら実行
+async def daily_race_task():
     await bot.wait_until_ready()
     data = await load_data()
 
-    now = datetime.now(JST)
-    # 土曜21:00〜日曜0:00の間に未開催なら開催
-    if now.weekday() == 5 and 21 <= now.hour < 24:
-        current_week = data["season"]["week"]
-        race_info = data["schedule"].get(current_week)
-        entries = data.get("pending_entries", {}).get(str(current_week), [])
-        # 既に開催済み確認
-        already = any(r["week"] == current_week and r["year"] == data["season"]["year"] for r in data["races"])
+    current_week = data["season"]["week"]
+    race_info = data["schedule"].get(current_week)
+    entries = data.get("pending_entries", {}).get(str(current_week), [])
 
-        if race_info and not already:
-            # エントリーが2頭未満ならレース不成立（持ち越し）
-            if len(entries) < 2:
-                # 不成立の通知は運営用チャンネルに投げたいが、ここではログのみ
-                # 次週へ疲労は据え置き
-                return
+    if race_info and len(entries) >= 2:
+        total, ratios = prize_pool_for_g1()
+        field = []
+        for hid in entries:
+            horse = data["horses"].get(hid)
+            if not horse:
+                continue
+            score = calc_race_score(horse, race_info["distance"], race_info["track"])
+            field.append((hid, horse["name"], horse["owner"], score))
 
-            # レース決行
-            total, ratios = prize_pool_for_g1()
-            field = []
-            for hid in entries:
-                horse = data["horses"].get(hid)
-                if not horse:
-                    continue
-                score = calc_race_score(horse, race_info["distance"], race_info["track"])
-                field.append((hid, horse["name"], horse["owner"], score))
+        field.sort(key=lambda x: x[3], reverse=True)
 
-            # スコアで順位決定
-            field.sort(key=lambda x: x[3], reverse=True)
+        results = []
+        for idx, (hid, hname, owner, score) in enumerate(field):
+            pos = idx + 1
+            prize = 0
+            if idx < len(ratios):
+                prize = int(total * ratios[idx])
+            o = data["owners"].get(owner)
+            if o:
+                o["balance"] = o.get("balance", 0) + prize
+                if pos == 1:
+                    o["wins"] = o.get("wins", 0) + 1
 
-            # 賞金配分（上位5頭）
-            results = []
-            for idx, (hid, hname, owner, score) in enumerate(field):
-                pos = idx + 1
-                prize = 0
-                if idx < len(ratios):
-                    prize = int(total * ratios[idx])
-                # データ更新
-                o = data["owners"].get(owner)
-                if o:
-                    o["balance"] = o.get("balance", 0) + prize
-                    if pos == 1:
-                        o["wins"] = o.get("wins", 0) + 1
-
-                h = data["horses"].get(hid)
-                if h:
-                    if pos == 1:
-                        h["wins"] = h.get("wins", 0) + 1
-                    h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(2, 4))
-                    progress_growth(h)
-                    h["history"].append({
-                        "year": data["season"]["year"],
-                        "week": current_week,
-                        "race": race_info["name"],
-                        "pos": pos,
-                        "score": round(score, 2),
-                        "prize": prize
-                    })
+            h = data["horses"].get(hid)
+            if h:
+                if pos == 1:
+                    h["wins"] = h.get("wins", 0) + 1
+                h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(2, 4))
+                progress_growth(h)
+                h["history"].append({
+                    "year": data["season"]["year"],
+                    "week": current_week,
+                    "race": race_info
 
                 results.append({
                     "pos": pos, "horse_id": hid, "horse_name": hname,
