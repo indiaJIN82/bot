@@ -760,6 +760,7 @@ async def daily_race_task():
                 data["season"]["month"] = 1
                 data["season"]["year"] += 1
 
+        # 保存
         await save_data(data)
 
         # 告知チャンネルに結果を投稿
