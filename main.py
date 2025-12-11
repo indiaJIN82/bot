@@ -376,7 +376,7 @@ async def daily_race_task():
         # 今週のエントリー消去
         data.get("pending_entries", {}).pop(str(current_week), None)
 
-        # 次週へ
+        # 次週へ（1〜30週でリセット）
         data["season"]["week"] += 1
         if data["season"]["week"] > 30:
             data["season"]["week"] = 1
@@ -394,7 +394,10 @@ async def daily_race_task():
             if channel:
                 msg_lines = [f"🏇 {race_info['name']} 結果 🏆"]
                 for r in results:
-                    msg_lines.append(f"{r['pos']}着 {r['horse_name']} (オーナー:<@{r['owner']}>) スコア:{r['score']} 賞金:{r['prize']}")
+                    msg_lines.append(
+                        f"{r['pos']}着 {r['horse_name']} (オーナー:<@{r['owner']}>) "
+                        f"スコア:{r['score']} 賞金:{r['prize']}"
+                    )
                 await channel.send("\n".join(msg_lines))
 
 @daily_race_task.before_loop
