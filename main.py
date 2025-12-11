@@ -42,7 +42,7 @@ async def load_data():
     if not os.path.exists(DATA_FILE):
         today = datetime.now(JST)
         # 現実の日付をそのまま週番号に
-        current_week = today.day
+        current_week = ((today.day - 1) % 30) + 1
         year = today.year
         month = today.month
 
@@ -368,10 +368,9 @@ async def daily_race_task():
         # 今週のエントリー消去
         data.get("pending_entries", {}).pop(str(current_week), None)
 
-        # 次週へ（現実の月の日数でリセット）
+        # 次週へ
         data["season"]["week"] += 1
-        days_in_month = calendar.monthrange(data["season"]["year"], data["season"]["month"])[1]
-        if data["season"]["week"] > days_in_month:
+        if data["season"]["week"] > 30:
             data["season"]["week"] = 1
             data["season"]["month"] += 1
             if data["season"]["month"] > 12:
