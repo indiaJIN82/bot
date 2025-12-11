@@ -148,13 +148,20 @@ def progress_growth(horse):
 
 # --------------- コマンド ---------------
 
-@bot.command(name="setannounce", help="[管理] レース結果を告知するチャンネルを設定します")
+@bot.command(name="resetdata", help="[管理] データファイルを初期化します")
 @commands.has_permissions(administrator=True)
-async def setannounce(ctx, channel_id: int):
+async def resetdata(ctx):
+    if os.path.exists(DATA_FILE):
+        os.remove(DATA_FILE)
+    await ctx.reply("データファイルを削除しました。Botを再起動すると新しい状態で始まります。")
+
+@bot.command(name="setannounce")
+@commands.has_permissions(administrator=True)
+async def setannounce(ctx, channel: discord.TextChannel):
     data = await load_data()
-    data["announce_channel"] = channel_id
+    data["announce_channel"] = channel.id
     await save_data(data)
-    await ctx.reply(f"告知チャンネルを <#{channel_id}> に設定しました。")
+    await ctx.reply(f"告知チャンネルを {channel.mention} に設定しました。")
 
 @bot.command(name="newhorse", help="新馬抽選：あなたの厩舎に新しい馬を追加します")
 async def newhorse(ctx, name: str):
