@@ -304,7 +304,9 @@ async def rank(ctx, category: str = "prize"):
 async def schedule(ctx):
     data = await load_data()
     week = data["season"]["week"]
-    race = data["schedule"].get(week)
+    
+    race = data["schedule"].get(str(week)) 
+    
     if not race:
         await ctx.reply(f"今週({week}週)はGⅠはありません。")
         return
@@ -698,7 +700,9 @@ async def daily_race_task():
     data = await load_data()
 
     current_week = data["season"]["week"]
-    race_info = data["schedule"].get(current_week)
+    
+    race_info = data["schedule"].get(str(current_week))
+    
     entries = data.get("pending_entries", {}).get(str(current_week), [])
 
     if race_info and len(entries) >= 2:
