@@ -148,6 +148,14 @@ def progress_growth(horse):
 
 # --------------- コマンド ---------------
 
+@bot.command(name="setannounce", help="[管理] レース結果を告知するチャンネルを設定します")
+@commands.has_permissions(administrator=True)
+async def setannounce(ctx, channel_id: int):
+    data = await load_data()
+    data["announce_channel"] = channel_id
+    await save_data(data)
+    await ctx.reply(f"告知チャンネルを <#{channel_id}> に設定しました。")
+
 @bot.command(name="newhorse", help="新馬抽選：あなたの厩舎に新しい馬を追加します")
 async def newhorse(ctx, name: str):
     data = await load_data()
@@ -378,6 +386,28 @@ async def daily_race_task():
                 data["season"]["year"] += 1
 
         await save_data(data)
+
+        # 次週へ（現実の月の日数でリセット）
+        data["season"]["week"] += 1
+        days_in_month = calendar.monthrange(data["season"]["year"], data["season"]["month"])[1]
+        if data["season"]["week"] > days_in_month:
+            data["season"]["week"] = 1
+            data["season"]["month"] += 1
+            if data["season"]["month"] > 12:
+                data["season"]["month"] = 1
+                data["season"]["year"] += 1
+
+        await save_data(data)
+
+        # 告知チャンネルに結果を投稿
+        channel_id = data.get("announce_channel")
+        if channel_id:
+            channel = bot.get_channel(channel_id)
+            if channel:
+                msg_lines = [f"🏇 {race_info['name']} 結果 🏆"]
+                for r in results:
+                    msg_lines.append(f"{r['pos']}着 {r['horse_name']} (オーナー:<@{r['owner']}>) スコア:{r['score']} 賞金:{r['prize']}")
+                await channel.send("\n".join(msg_lines))
 
 @daily_race_task.before_loop
 async def before_daily_race_task():
