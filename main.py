@@ -368,19 +368,19 @@ async def daily_race_task():
         # 今週のエントリー消去
         data.get("pending_entries", {}).pop(str(current_week), None)
 
-import calendar
+    import calendar
 
-# 次週へ（現実の月の日数でリセット）
-data["season"]["week"] += 1
-days_in_month = calendar.monthrange(data["season"]["year"], data["season"]["month"])[1]
-if data["season"]["week"] > days_in_month:
-    data["season"]["week"] = 1
-    data["season"]["month"] += 1
-    if data["season"]["month"] > 12:
-        data["season"]["month"] = 1
-        data["season"]["year"] += 1
+    # 次週へ（現実の月の日数でリセット）
+    data["season"]["week"] += 1
+    days_in_month = calendar.monthrange(data["season"]["year"], data["season"]["month"])[1]
+    if data["season"]["week"] > days_in_month:
+        data["season"]["week"] = 1
+        data["season"]["month"] += 1
+        if data["season"]["month"] > 12:
+            data["season"]["month"] = 1
+            data["season"]["year"] += 1
 
-        await save_data(data)
+    await save_data(data)
 
 @daily_race_task.before_loop
 async def before_daily_race_task():
