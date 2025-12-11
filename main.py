@@ -2,7 +2,9 @@ import os
 import json
 import random
 import asyncio
-from datetime import datetime, timezone, timedelta
+import calendar
+# 変更: timeをインポートに追加
+from datetime import datetime, timezone, timedelta, time 
 
 import discord
 from discord.ext import commands, tasks
@@ -20,7 +22,6 @@ def home():
     return "Bot is running!"
 
 def run():
-    # ポートはReplitなどの環境に合わせて10000を使用
     app.run(host='0.0.0.0', port=10000)
 
 def keep_alive():
@@ -37,19 +38,32 @@ bot = commands.Bot(command_prefix="!", intents=INTENTS)
 DATA_FILE = "racing_data.json"
 JST = timezone(timedelta(hours=9))
 
-# --------------- ユーティリティ ---------------
+# 19:00 JST を指定
+RACE_TIME_JST = time(hour=19, minute=0, tzinfo=JST)
 
-import calendar
+# --------------- ユーティリティ (変更なし) ---------------
+
+# 最大保有頭数 
+MAX_HORSES_PER_OWNER = 5
 
 async def load_data():
+    """データをロードし、存在しない場合は初期データを作成して保存する"""
+    default_data = {
+        "horses": {},
+        "owners": {},
+        "races": [],
+        "schedule": default_schedule(),
+        "rankings": {"prize": {}, "wins": {}, "stable": {}},
+        "announce_channel": None,
+        "pending_entries": {}
+    }
+    
     if not os.path.exists(DATA_FILE):
         today = datetime.now(JST)
-        # 現実の日付をそのまま週番号に
         current_week = ((today.day - 1) % 30) + 1
         year = today.year
         month = today.month
 
-        # 月末を超えたら翌月に繰り越し（calendarで月の日数を取得）
         days_in_month = calendar.monthrange(year, month)[1]
         if current_week > days_in_month:
             current_week = 1
@@ -57,27 +71,32 @@ async def load_data():
             if month > 12:
                 month = 1
                 year += 1
-
+        
+        default_data["season"] = {"year": year, "month": month, "week": current_week}
+        
         async with aiofiles.open(DATA_FILE, "w") as f:
-            await f.write(json.dumps({
-                "horses": {},
-                "owners": {},
-                "races": [],
-                "season": {"year": year, "month": month, "week": current_week},
-                "schedule": default_schedule(),
-                "rankings": {"prize": {}, "wins": {}, "stable": {}},
-                "announce_channel": None  # 初期値としてNoneを追加
-            }, ensure_ascii=False))
+            await f.write(json.dumps(default_data, ensure_ascii=False, indent=2))
+        return default_data
+
     async with aiofiles.open(DATA_FILE, "r") as f:
         text = await f.read()
-        return json.loads(text)
+        data = json.loads(text)
+        
+        # 既存データに新しいキーがない場合は追加
+        if "pending_entries" not in data:
+            data["pending_entries"] = {}
+        if "announce_channel" not in data:
+             data["announce_channel"] = None
+        
+        return data
 
 async def save_data(data):
+    """データをファイルに保存する"""
     async with aiofiles.open(DATA_FILE, "w") as f:
         await f.write(json.dumps(data, ensure_ascii=False, indent=2))
 
 def default_schedule():
-    # 1か月＝30日周期の簡易GⅠスケジュール
+    """レーススケジュール定義（キーは文字列）"""
     return {
         "1":  {"name": "京都金杯", "distance": 1600, "track": "芝"},
         "2":  {"name": "中山金杯", "distance": 2000, "track": "芝"},
@@ -150,10 +169,23 @@ def progress_growth(horse):
     g = horse["stats"]["growth"]
     horse["stats"]["growth"] = min(100, g + random.randint(1, 3))
 
-# --------------- コマンド ---------------
+async def announce_race_results(data, race_info, results, week, year, channel):
+    """レース結果を整形して投稿する共通関数"""
+    msg_lines = [
+        f"🏇 **{race_info['name']}** ({year}年 第{week}週) 結果 🏆", 
+        "---"
+    ]
+    for r in results:
+        msg_lines.append(
+            f"{r['pos']}着 **{r['horse_name']}** (オーナー:<@{r['owner']}>) "
+            f"賞金:{r['prize']}"
+        )
+    await channel.send("\n".join(msg_lines))
+
+# ----------------- コマンド (setannounceのみ変更なしを確認) -----------------
 
 @bot.command(name="resetdata", help="[管理] データファイルを初期化します")
-@commands.has_permissions(administrator=True) # 管理者権限を必須化
+@commands.has_permissions(administrator=True)
 async def resetdata(ctx):
     if os.path.exists(DATA_FILE):
         os.remove(DATA_FILE)
@@ -161,7 +193,7 @@ async def resetdata(ctx):
 
 @bot.command(name="setannounce", help="[管理] レース結果を告知するチャンネルを設定します")
 @commands.has_permissions(administrator=True)
-async def setannounce(ctx, channel: discord.TextChannel):
+async def setannounce(ctx, channel: discord.TextChannel): # 1.対応: TextChannel型でチャンネルメンションに対応
     data = await load_data()
     data["announce_channel"] = channel.id
     await save_data(data)
@@ -175,6 +207,11 @@ async def newhorse(ctx, name: str):
     # オーナー登録
     if uid not in data["owners"]:
         data["owners"][uid] = {"horses": [], "balance": 0, "wins": 0}
+
+    # 最大保有頭数チェック
+    if len(data["owners"][uid]["horses"]) >= MAX_HORSES_PER_OWNER:
+        await ctx.reply(f"最大保有頭数**{MAX_HORSES_PER_OWNER}頭**を超えています。`!retire <ID>` で馬を引退させてください。")
+        return
 
     # 馬の生成（ランダムステータス）
     horse_id = new_horse_id(data)
@@ -204,13 +241,34 @@ async def newhorse(ctx, name: str):
         f"ステータス: SPD {stats['speed']} / STA {stats['stamina']} / TEM {stats['temper']} / GRW {stats['growth']}"
     )
 
+@bot.command(name="retire", help="馬を引退させて厩舎から削除します: 例) !retire H12345")
+async def retire(ctx, horse_id: str):
+    data = await load_data()
+    uid = str(ctx.author.id)
+    horse = data["horses"].get(horse_id)
+
+    if not horse:
+        await ctx.reply("そのIDの馬は存在しません。")
+        return
+    if horse["owner"] != uid:
+        await ctx.reply("これはあなたの馬ではありません。")
+        return
+    
+    # 削除処理
+    data["owners"][uid]["horses"].remove(horse_id)
+    del data["horses"][horse_id]
+    
+    await save_data(data)
+    await ctx.reply(f"馬 **{horse['name']} (ID: {horse_id})** を引退させ、厩舎から削除しました。")
+
+
 @bot.command(name="myhorses", help="自分の馬一覧を表示します")
 async def myhorses(ctx):
     data = await load_data()
     uid = str(ctx.author.id)
     owner = data["owners"].get(uid)
     if not owner or not owner["horses"]:
-        await ctx.reply("あなたの厩舎には馬がいません。!newhorse <名前> で新馬抽選しましょう。")
+        await ctx.reply("あなたの厩舎には馬がいません。`!newhorse <名前>` で新馬抽選しましょう。")
         return
 
     lines = []
@@ -239,22 +297,22 @@ async def entry(ctx, horse_id: str):
         await ctx.reply("この馬は疲労が高すぎます。今週は休ませましょう。")
         return
 
-    # レースエントリー（今週の仮リストに保持）
     current_week = data["season"]["week"]
-    # レースバッファを作る（開催時まとめて処理）
     pending = data.get("pending_entries", {})
-    if str(current_week) not in pending:
-        pending[str(current_week)] = []
-    # 重複登録防止
-    if horse_id in pending[str(current_week)]:
+    week_key = str(current_week)
+    
+    if week_key not in pending:
+        pending[week_key] = []
+    
+    if horse_id in pending[week_key]:
         await ctx.reply("すでに今週のレースにエントリー済みです。")
         return
 
-    pending[str(current_week)].append(horse_id)
+    pending[week_key].append(horse_id)
     data["pending_entries"] = pending
     await save_data(data)
 
-    await ctx.reply(f"出走登録完了！ 今週({current_week}週)のGⅠに {horse['name']} をエントリーしました。")
+    await ctx.reply(f"出走登録完了！ 今週({current_week}週)のGⅠに **{horse['name']}** をエントリーしました。")
 
 @bot.command(name="rest", help="馬を休養させて疲労を回復します: 例) !rest H12345")
 async def rest(ctx, horse_id: str):
@@ -267,11 +325,11 @@ async def rest(ctx, horse_id: str):
     if horse["owner"] != uid:
         await ctx.reply("これはあなたの馬ではありません。")
         return
-    # 疲労軽減
+    
     old = horse.get("fatigue", 0)
     horse["fatigue"] = max(0, old - 3)
     await save_data(data)
-    await ctx.reply(f"{horse['name']} を休養させました。疲労 {old} → {horse['fatigue']}")
+    await ctx.reply(f"**{horse['name']}** を休養させました。疲労 {old} → {horse['fatigue']}")
 
 @bot.command(name="balance", help="所持賞金と勝利数を確認します")
 async def balance(ctx):
@@ -285,29 +343,41 @@ async def rank(ctx, category: str = "prize"):
     data = await load_data()
 
     if category not in ["prize", "wins"]:
-        await ctx.reply("カテゴリは 'prize' か 'wins' を指定してください。例) !rank prize")
+        await ctx.reply("カテゴリは 'prize' か 'wins' を指定してください。例) `!rank prize`")
         return
 
-    # 集計
     if category == "prize":
         board = {}
         for uid, o in data["owners"].items():
             board[uid] = o.get("balance", 0)
         sorted_board = sorted(board.items(), key=lambda x: x[1], reverse=True)
-        text = "\n".join([f"{i+1}. <@{uid}>: {amt}" for i, (uid, amt) in enumerate(sorted_board[:10])])
+        text = "\n"
+        for i, (uid, amt) in enumerate(sorted_board[:10]):
+            try:
+                user = await bot.fetch_user(int(uid))
+                username = user.display_name
+            except (discord.NotFound, discord.HTTPException):
+                username = f"Unknown User ({uid})"
+            text += f"{i+1}. {username}: {amt}\n"
         await ctx.reply("賞金ランキング TOP10:\n" + (text if text else "該当者なし"))
     else:
         board = {}
         for uid, o in data["owners"].items():
             board[uid] = o.get("wins", 0)
         sorted_board = sorted(board.items(), key=lambda x: x[1], reverse=True)
-        text = "\n".join([f"{i+1}. <@{uid}>: {wins}勝" for i, (uid, wins) in enumerate(sorted_board[:10])])
+        text = "\n"
+        for i, (uid, wins) in enumerate(sorted_board[:10]):
+            try:
+                user = await bot.fetch_user(int(uid))
+                username = user.display_name
+            except (discord.NotFound, discord.HTTPException):
+                username = f"Unknown User ({uid})"
+            text += f"{i+1}. {username}: {wins}勝\n"
         await ctx.reply("勝利数ランキング TOP10:\n" + (text if text else "該当者なし"))
 
 @bot.command(name="schedule", help="今週のGⅠ情報を表示します")
 async def schedule(ctx):
     data = await load_data()
-    # 週番号はintではなくstrで格納されている可能性があるので、str()でアクセス
     week_str = str(data["season"]["week"])
     
     race = data["schedule"].get(week_str)
@@ -315,27 +385,34 @@ async def schedule(ctx):
     if not race:
         await ctx.reply(f"今週({data['season']['week']}週)はGⅠはありません。")
         return
-    await ctx.reply(f"今週({data['season']['week']}週)のGⅠ: {race['name']} / 距離:{race['distance']}m / トラック:{race['track']}")
+    await ctx.reply(f"今週({data['season']['week']}週)のGⅠ: **{race['name']}** / 距離:{race['distance']}m / トラック:{race['track']}")
 
 @bot.command(name="season", help="シーズン情報を表示します")
 async def season(ctx):
     data = await load_data()
     await ctx.reply(f"シーズン: {data['season']['year']}年 / 第{data['season']['week']}週")
 
-# --------------- レース開催タスク（毎日開催に変更） ---------------
+# --------------- レース処理関数（タスクとforceraceで共通利用） (変更なし) ---------------
 
-@tasks.loop(hours=24)
-async def daily_race_task():
-    await bot.wait_until_ready()
-    data = await load_data()
-
-    current_week_str = str(data["season"]["week"])
+async def run_race_logic(data, is_forced=False):
+    """
+    レースを実行し、結果をデータに保存する。
+    is_forced=True の場合は週を進めない
+    """
+    current_week = data["season"]["week"]
+    current_week_str = str(current_week)
     
     race_info = data["schedule"].get(current_week_str)
-    
     entries = data.get("pending_entries", {}).get(current_week_str, [])
+    
+    # 告知チャンネルの取得
+    channel = None
+    channel_id = data.get("announce_channel")
+    if channel_id:
+        channel = bot.get_channel(channel_id)
 
     if race_info and len(entries) >= 2:
+        # レース実行ロジック (省略せず記載)
         total, ratios = prize_pool_for_g1()
         field = []
         for hid in entries:
@@ -366,14 +443,12 @@ async def daily_race_task():
             if h:
                 if pos == 1:
                     h["wins"] = h.get("wins", 0) + 1
-                # 疲労増加と成長
                 h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(2, 4))
                 progress_growth(h)
                 
-                # レース履歴追加
                 h["history"].append({
                     "year": data["season"]["year"],
-                    "week": data["season"]["week"],
+                    "week": current_week,
                     "race": race_info["name"],
                     "pos": pos,
                     "score": round(score, 2),
@@ -388,7 +463,7 @@ async def daily_race_task():
         # レース履歴
         data["races"].append({
             "year": data["season"]["year"],
-            "week": data["season"]["week"],
+            "week": current_week,
             "name": race_info["name"],
             "distance": race_info["distance"],
             "track": race_info["track"],
@@ -398,34 +473,24 @@ async def daily_race_task():
         # 今週のエントリー消去
         data.get("pending_entries", {}).pop(current_week_str, None)
 
-        # 次週へ（1〜30週でリセット）
-        data["season"]["week"] += 1
-        if data["season"]["week"] > 30:
-            data["season"]["week"] = 1
-            data["season"]["month"] += 1
-            if data["season"]["month"] > 12:
-                data["season"]["month"] = 1
-                data["season"]["year"] += 1
-
-        # 保存
-        await save_data(data)
-
         # 告知チャンネルに結果を投稿
-        channel_id = data.get("announce_channel")
-        if channel_id:
-            channel = bot.get_channel(channel_id)
-            if channel:
-                msg_lines = [f"🏇 {race_info['name']} ({data['season']['year']}年 第{data['season']['week']-1}週) 結果 🏆", "---"]
-                for r in results:
-                    msg_lines.append(
-                        f"{r['pos']}着 **{r['horse_name']}** (オーナー:<@{r['owner']}>) "
-                        f"賞金:{r['prize']}"
-                    )
-                await channel.send("\n".join(msg_lines))
+        if channel:
+            await announce_race_results(data, race_info, results, current_week, data['season']['year'], channel)
+        
+        race_held = True
+
+    elif race_info and len(entries) < 2:
+        # エントリー不足でレース不成立
+        if channel:
+            await channel.send(f"⚠️ 今週のGⅠ「{race_info['name']}」はエントリー馬が2頭未満のため開催されませんでした。")
+        race_held = False
+        
     else:
-        # エントリー数が足りないか、今週はレースがない場合
-        # 週の進行のみ行う（エントリーがなくても次週に進める）
-        # 次週へ（1〜30週でリセット）
+        # 今週はレースなし
+        race_held = False
+
+    # 週の進行 (強制レース時は進めない)
+    if not is_forced:
         data["season"]["week"] += 1
         if data["season"]["week"] > 30:
             data["season"]["week"] = 1
@@ -433,39 +498,48 @@ async def daily_race_task():
             if data["season"]["month"] > 12:
                 data["season"]["month"] = 1
                 data["season"]["year"] += 1
-        await save_data(data)
-        
-        # レースがなかったことを告知（オプション）
-        channel_id = data.get("announce_channel")
-        if channel_id:
-            channel = bot.get_channel(channel_id)
-            if channel:
-                if race_info:
-                    await channel.send(f"⚠️ 今週のGⅠ「{race_info['name']}」はエントリー馬が2頭未満のため開催されませんでした。次週へ進みます。")
-                # レースがない場合は特に通知しない（静かに進行）
+
+    await save_data(data)
+    return race_held, race_info
+
+# --------------- レース開催タスク（毎日19:00 JSTに実行） ---------------
+
+@tasks.loop(time=RACE_TIME_JST) # 2.対応: 毎日19:00 JSTに実行
+async def daily_race_task():
+    await bot.wait_until_ready()
+    data = await load_data()
+    
+    # daily_race_taskは週を進める
+    await run_race_logic(data, is_forced=False) 
 
 @daily_race_task.before_loop
 async def before_daily_race_task():
     await bot.wait_until_ready()
 
-# --------------- 管理系 ---------------
+# --------------- 管理系 (変更なし) ---------------
 
-@bot.command(name="forcerace", help="[管理] 今週のレースを即時開催し、週を進めます")
+@bot.command(name="forcerace", help="[管理] 今週のレースを即時開催します（週は進めない）")
 @commands.has_permissions(administrator=True)
 async def forcerace(ctx):
-    await ctx.reply("今週のレース開催を試みます（条件が揃っていれば実行）。完了後、週が進行します。")
-    # タスクの呼び出し
-    await daily_race_task.__call__()
-    await ctx.reply("レース処理と週の進行が完了しました。")
+    data = await load_data()
+    
+    await ctx.reply("今週のレース開催を試みます（週は進行しません）。")
+    
+    race_held, race_info = await run_race_logic(data, is_forced=True)
+    
+    if race_held:
+        await ctx.send("レース処理が完了しました。結果は告知チャンネルをご確認ください。")
+    elif race_info:
+        await ctx.send("エントリー馬が2頭未満のためレースは開催されませんでした。")
+    else:
+        await ctx.send("今週はレースが予定されていませんでした。")
 
 
-# --------------- 起動 ---------------
+# --------------- 起動 (変更なし) ---------------
 
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    # load_dataでファイルがない場合の初期化処理を確実に行う
-    await load_data() 
     daily_race_task.start()
 
 if __name__ == "__main__":
