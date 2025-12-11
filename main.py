@@ -149,7 +149,7 @@ def progress_growth(horse):
 # --------------- コマンド ---------------
 
 @bot.command(name="resetdata", help="[管理] データファイルを初期化します")
-@commands.has_permissions(administrator=True)
+# @commands.has_permissions(administrator=True)
 async def resetdata(ctx):
     if os.path.exists(DATA_FILE):
         os.remove(DATA_FILE)
