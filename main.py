@@ -380,8 +380,6 @@ async def daily_race_task():
 
         await save_data(data)
 
-    await save_data(data)
-
 @daily_race_task.before_loop
 async def before_daily_race_task():
     await bot.wait_until_ready()
