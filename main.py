@@ -399,7 +399,7 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     weekly_race_task.start()
 
-    if __name__ == "__main__":
+if __name__ == "__main__":
     keep_alive()
     token = os.getenv("DISCORD_TOKEN")
     if not token:
