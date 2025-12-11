@@ -387,18 +387,6 @@ async def daily_race_task():
 
         await save_data(data)
 
-        # 次週へ（現実の月の日数でリセット）
-        data["season"]["week"] += 1
-        days_in_month = calendar.monthrange(data["season"]["year"], data["season"]["month"])[1]
-        if data["season"]["week"] > days_in_month:
-            data["season"]["week"] = 1
-            data["season"]["month"] += 1
-            if data["season"]["month"] > 12:
-                data["season"]["month"] = 1
-                data["season"]["year"] += 1
-
-        await save_data(data)
-
         # 告知チャンネルに結果を投稿
         channel_id = data.get("announce_channel")
         if channel_id:
