@@ -70,17 +70,10 @@ async def load_data():
     
     if not os.path.exists(DATA_FILE):
         today = datetime.now(JST)
-        current_week = ((today.day - 1) % 30) + 1
+        # 週の初期化ロジック (簡易的なもの)
+        current_week = 1 
         year = today.year
         month = today.month
-
-        days_in_month = calendar.monthrange(year, month)[1]
-        if current_week > days_in_month:
-            current_week = 1
-            month += 1
-            if month > 12:
-                month = 1
-                year += 1
         
         default_data["season"] = {"year": year, "month": month, "week": current_week}
         
@@ -97,11 +90,13 @@ async def load_data():
         if "announce_channel" not in data:
              data["announce_channel"] = None
         
-        # 芝・ダート適性のデータ移行（既存の馬にも適性を付与）
+        # 芝・ダート適性、お気に入りのデータ移行（既存の馬にも適性/favoriteを付与）
         for hid, horse in data["horses"].items():
             if "turf_apt" not in horse["stats"]:
                 horse["stats"]["turf_apt"] = random.randint(50, 90)
                 horse["stats"]["dirt_apt"] = random.randint(50, 90)
+            if "favorite" not in horse:
+                 horse["favorite"] = False
         
         return data
 
@@ -163,7 +158,6 @@ def generate_bot_horse(existing_ids):
     """Bot馬を生成する"""
     horse_id = new_bot_horse_id(existing_ids)
     
-    # プレイヤー馬より少し強めに設定（Bot馬が上位に来ることでレースが面白くなる）
     stats = {
         "speed": random.randint(70, 100),
         "stamina": random.randint(70, 100),
@@ -173,7 +167,6 @@ def generate_bot_horse(existing_ids):
         "dirt_apt": random.randint(60, 95), 
     }
     
-    # Bot馬の名前リスト (ランダムに選ぶ)
     bot_names = [
         "キョウカイノホシ", "アイビスフライト", "シルバーファントム", 
         "レジェンドブルー", "グランドマスター", "ウィニングラン", 
@@ -183,12 +176,13 @@ def generate_bot_horse(existing_ids):
     return {
         "id": horse_id,
         "name": random.choice(bot_names) + str(random.randint(1, 9)),
-        "owner": BOT_OWNER_ID, # 特殊なBotオーナーID
+        "owner": BOT_OWNER_ID, 
         "stats": stats,
         "age": random.randint(3, 5),
         "fatigue": 0,
         "wins": 0,
-        "history": []
+        "history": [],
+        "favorite": False 
     }
 
 
@@ -235,7 +229,6 @@ def prize_pool_for_g1():
 def prize_pool_for_lower():
     """下級レースの賞金設定"""
     total = 10000 
-    # 1着 10000, 2着 5000, 3着 2000
     return total, [1.0, 0.5, 0.2] 
 
 
@@ -250,7 +243,6 @@ def generate_commentary(race_info, results, entries_count):
     winner = results[0]
     second = results[1] if len(results) > 1 else None
     
-    # Bot馬が勝った場合の特別コメント
     if winner['owner'] == BOT_OWNER_ID:
         commentary = [
              f"無敵の強さ！ 協会生産の**{winner['horse_name']}**が他馬を寄せ付けず圧勝！ プレイヤー勢は歯が立ちませんでした！",
@@ -261,8 +253,7 @@ def generate_commentary(race_info, results, entries_count):
             f"さあ、ゴール！ 激しい叩き合いを制したのは、見事な走りを見せた**{winner['horse_name']}**だ！",
             f"最後の直線！ **{winner['horse_name']}**が力強い末脚で一気に抜け出し、優勝の栄冠に輝きました！",
         ]
-    else: # 下級レース用コメント
-        # 下級レース用の特別なコメント
+    else: 
         commentary = [
             f"最終レース、**{winner['horse_name']}**が混戦を抜け出し、見事一発逆転を決めました！",
             f"力の違いを見せつけた**{winner['horse_name']}**が、最後の賞金を獲得しました！",
@@ -284,13 +275,11 @@ async def announce_race_results(data, race_info, results, week, year, channel, e
     
     commentary = generate_commentary(race_info, results, entries_count) 
     
-    # GⅠと下級レースでタイトルを変更
     if race_info['name'].startswith("GⅠ"):
          title = f"🎉 レース結果速報 - {year}年 第{week}週 🎉"
          race_line = f"**【{race_info['name']}】** 距離:{race_info['distance']}m / 馬場:{race_info['track']} / **{entries_count}頭立て**"
     else:
          title = f"📢 下級レース結果 - {year}年 第{week}週"
-         # レース名と発走時刻を固定
          race_line = f"**【{race_info['name']}】** 距離:{race_info['distance']}m / 馬場:{race_info['track']} / **{entries_count}頭立て**"
     
     msg_lines = [
@@ -301,7 +290,6 @@ async def announce_race_results(data, race_info, results, week, year, channel, e
         "---------------------",
     ]
     
-    # GⅠは5着まで賞金、下級レースは3着まで賞金
     prize_count = 5 if race_info['name'].startswith("GⅠ") else 3
 
     for r in results:
@@ -310,8 +298,9 @@ async def announce_race_results(data, race_info, results, week, year, channel, e
             owner_display = "**協会生産**"
         else:
             owner_display = f"<@{r['owner']}>"
-
-        line = f"{r['pos']}着 **{r['horse_name']}** (オーナー:{owner_display})"
+        
+        # 馬番を表示
+        line = f"**{r['pos']}着** ({r['post_position']}番) **{r['horse_name']}** (オーナー:{owner_display})"
         
         if r['pos'] <= prize_count:
              line += f" 賞金:{r['prize']} (スコア:{r['score']:.2f})"
@@ -367,7 +356,6 @@ async def confirmreset(ctx):
 @bot.command(name="setannounce", help="[管理] レース結果を告知するチャンネルを設定します")
 @commands.has_permissions(administrator=True)
 async def setannounce(ctx, channel: discord.TextChannel):
-    # 二重返信対策として、load_data前にctx.sendを使うのを避けます
     data = await load_data()
     data["announce_channel"] = channel.id
     await save_data(data)
@@ -382,7 +370,7 @@ async def newhorse(ctx, name: str):
         data["owners"][uid] = {"horses": [], "balance": 0, "wins": 0}
 
     if len(data["owners"][uid]["horses"]) >= MAX_HORSES_PER_OWNER:
-        await ctx.reply(f"最大保有頭数**{MAX_HORSES_PER_OWNER}頭**を超えています。`!retire <ID>` で馬を引退させてください。")
+        await ctx.reply(f"最大保有頭数**{MAX_HORSES_PER_OWNER}頭**を超えています。`!retire <ID>` または `!massretire` で馬を引退させてください。")
         return
 
     horse_id = new_horse_id(data)
@@ -402,7 +390,8 @@ async def newhorse(ctx, name: str):
         "age": 3,
         "fatigue": 0,
         "wins": 0,
-        "history": []
+        "history": [],
+        "favorite": False 
     }
 
     data["horses"][horse_id] = horse
@@ -413,7 +402,8 @@ async def newhorse(ctx, name: str):
     await ctx.reply(
         f"新馬抽選完了！\nID: {horse_id} / 名前: {name}\n"
         f"ステータス: SPD {s['speed']} / STA {s['stamina']} / TEM {s['temper']} / GRW {s['growth']}\n"
-        f"適性: 芝 {s['turf_apt']} / ダート {s['dirt_apt']}"
+        f"適性: 芝 {s['turf_apt']} / ダート {s['dirt_apt']}\n"
+        f"お気に入り登録: {horse['favorite']}"
     )
 
 @bot.command(name="retire", help="馬を引退させて厩舎から削除します: 例) !retire H12345")
@@ -430,11 +420,88 @@ async def retire(ctx, horse_id: str):
         return
     
     data["owners"][uid]["horses"].remove(horse_id)
-    # Bot馬を永続的に保存するわけではないため、プレイヤー馬を削除する際はhorsesから削除してOK
     del data["horses"][horse_id]
     
     await save_data(data)
     await ctx.reply(f"馬 **{horse['name']} (ID: {horse_id})** を引退させ、厩舎から削除しました。")
+
+
+@bot.command(name="massretire", help="お気に入り以外の馬を全て引退させます (🚨要確認)")
+async def massretire(ctx):
+    data = await load_data()
+    uid = str(ctx.author.id)
+    owner = data["owners"].get(uid)
+    
+    if not owner or not owner["horses"]:
+        await ctx.reply("あなたの厩舎には馬がいません。")
+        return
+
+    to_retire = []
+    to_keep = []
+    
+    # お気に入りでない馬を選別
+    for hid in owner["horses"]:
+        horse = data["horses"].get(hid)
+        if horse and not horse.get("favorite", False):
+            to_retire.append(hid)
+        elif horse:
+            to_keep.append(hid)
+
+    if not to_retire:
+        await ctx.reply("お気に入り登録されている馬しかいません。削除対象の馬がいません。")
+        return
+        
+    # 削除実行
+    for hid in to_retire:
+        if hid in data["horses"]:
+             del data["horses"][hid]
+    
+    # オーナーの馬リストを更新
+    data["owners"][uid]["horses"] = to_keep
+    
+    await save_data(data)
+    
+    keep_names = [data["horses"][hid]["name"] for hid in to_keep]
+    
+    reply_msg = [
+        f"✅ **{len(to_retire)}頭**の馬を引退させました。",
+        "---",
+        f"現在厩舎に残っている馬 (**{len(to_keep)}頭**) (お気に入り):"
+    ]
+    if keep_names:
+        reply_msg.append(", ".join(keep_names))
+    else:
+        reply_msg.append("なし")
+        
+    await ctx.reply("\n".join(reply_msg))
+
+@bot.command(name="favorite", help="馬をお気に入りに登録します (全削除除外対象): 例) !favorite H12345")
+async def favorite(ctx, horse_id: str):
+    data = await load_data()
+    uid = str(ctx.author.id)
+    horse = data["horses"].get(horse_id)
+    
+    if not horse or horse["owner"] != uid:
+        await ctx.reply("そのIDの馬は存在しないか、あなたの馬ではありません。")
+        return
+    
+    horse["favorite"] = True
+    await save_data(data)
+    await ctx.reply(f"**{horse['name']}** をお気に入りに登録しました。`!massretire` の対象から除外されます。")
+
+@bot.command(name="unfavorite", help="馬のお気に入り登録を解除します: 例) !unfavorite H12345")
+async def unfavorite(ctx, horse_id: str):
+    data = await load_data()
+    uid = str(ctx.author.id)
+    horse = data["horses"].get(horse_id)
+    
+    if not horse or horse["owner"] != uid:
+        await ctx.reply("そのIDの馬は存在しないか、あなたの馬ではありません。")
+        return
+    
+    horse["favorite"] = False
+    await save_data(data)
+    await ctx.reply(f"**{horse['name']}** のお気に入り登録を解除しました。`!massretire` の対象となります。")
 
 
 @bot.command(name="myhorses", help="自分の馬一覧を表示します")
@@ -450,8 +517,9 @@ async def myhorses(ctx):
     for hid in owner["horses"]:
         h = data["horses"][hid]
         s = h["stats"]
+        fav_icon = "⭐" if h.get("favorite", False) else " "
         lines.append(
-            f"- {h['name']} (ID: {hid}) / 年齢:{h['age']} / 勝利:{h['wins']} / 疲労:{h['fatigue']} / "
+            f"{fav_icon} - {h['name']} (ID: {hid}) / 年齢:{h['age']} / 勝利:{h['wins']} / 疲労:{h['fatigue']} / "
             f"SPD:{s['speed']} STA:{s['stamina']} TEM:{s['temper']} GRW:{s['growth']} / "
             f"芝:{s.get('turf_apt', 'N/A')} ダ:{s.get('dirt_apt', 'N/A')}" 
         )
@@ -551,17 +619,24 @@ async def entries(ctx):
         await ctx.reply(f"今週のGⅠ「**{race_info['name']}**」にエントリーされているプレイヤー馬はいません。`!entry <ID>` で登録してください！")
         return
         
+    # 馬番を登録順に割り振る (1から始まる)
+    # entries_listの順序が登録順を保っているため、そのインデックスを使用
+    for i, entry in enumerate(entries_data):
+         entry["post_position"] = i + 1 
+
+    # 馬番順にソートして表示
+    entries_data.sort(key=lambda x: x["post_position"])
+
     # 表示をテーブル形式で整形 (Markdownのテーブル記法を使用)
     body = [""]
     # ヘッダー
-    body.append(f"| {'ID':<6} | {'馬名':<10} | {'オーナー':<15} | {'疲労':<4} | {'勝利数':<4} |")
+    body.append(f"| {'馬番':<3} | {'ID':<6} | {'馬名':<10} | {'オーナー':<15} | {'疲労':<4} |")
     # 整形ライン
-    body.append("|:-----|:-----------|:-----------------|:----:|:----:|")
+    body.append("|:---:|:-----|:-----------|:-----------------|:----:|")
     
     for entry in entries_data:
-        # Markdownのテーブル内で全角文字の幅を考慮するのは難しいので、ここではシンプルに表示
         body.append(
-            f"| {entry['id']} | {entry['name']} | {entry['owner']} | {entry['fatigue']} | {entry['wins']} |"
+            f"| {entry['post_position']:<3} | {entry['id']} | {entry['name']} | {entry['owner']} | {entry['fatigue']} |"
         )
         
     await ctx.reply("\n".join(header + body))
@@ -601,7 +676,6 @@ async def rank(ctx, category: str = "prize"):
     if category == "prize":
         board = {}
         for uid, o in data["owners"].items():
-            # Botオーナーはランキングから除外
             if uid == BOT_OWNER_ID: continue
             board[uid] = o.get("balance", 0)
         sorted_board = sorted(board.items(), key=lambda x: x[1], reverse=True)
@@ -617,7 +691,6 @@ async def rank(ctx, category: str = "prize"):
     else:
         board = {}
         for uid, o in data["owners"].items():
-            # Botオーナーはランキングから除外
             if uid == BOT_OWNER_ID: continue
             board[uid] = o.get("wins", 0)
         sorted_board = sorted(board.items(), key=lambda x: x[1], reverse=True)
@@ -684,13 +757,11 @@ async def run_lower_race_logic(data, horses_not_entered, current_week, year, cha
     GⅠに出走しなかった馬を対象に下級レースを自動開催する
     """
     
-    # 下級レースはプレイヤー馬のみが対象
     entries = [hid for hid in horses_not_entered if data["horses"].get(hid) and data["horses"][hid]["owner"] != BOT_OWNER_ID]
     entries_count = len(entries)
     
     if entries_count < 2:
         if channel:
-             # メッセージをシンプルに修正
              await channel.send("ℹ️ 下級レースはエントリー馬が2頭未満のため開催されませんでした。")
         return
 
@@ -699,31 +770,38 @@ async def run_lower_race_logic(data, horses_not_entered, current_week, year, cha
     random_track = random.choice(["芝", "ダート"])
     
     race_info = {
-        "name": "一発逆転！京都ファイナルレース", # レース名を固定
+        "name": "一発逆転！京都ファイナルレース", 
         "distance": random_distance,
         "track": random_track
     }
     
-    total, ratios = prize_pool_for_lower() # 下級レースの賞金プール
+    total, ratios = prize_pool_for_lower() 
 
     field = []
-    for hid in entries:
+    # 馬番割り振りとデータ整形 (エントリー順に1から割り振る)
+    for idx, hid in enumerate(entries):
         horse = data["horses"].get(hid)
         score = calc_race_score(horse, race_info["distance"], race_info["track"])
-        field.append((hid, horse["name"], horse["owner"], score))
+        
+        field.append({
+            "id": hid, "name": horse["name"], "owner": horse["owner"], 
+            "score": score, "post_position": idx + 1 # 1から始まる馬番を割り振り
+        })
 
-    field.sort(key=lambda x: x[3], reverse=True)
+    field.sort(key=lambda x: x["score"], reverse=True) # スコアで着順を決定
 
     results = []
-    for idx, (hid, hname, owner, score) in enumerate(field):
+    for idx, entry in enumerate(field):
         pos = idx + 1
-        prize = 0
+        hid = entry["id"]
+        owner = entry["owner"]
+        score = entry["score"]
+        hname = entry["name"]
         
-        # 3着まで賞金 (ratiosのインデックス0, 1, 2)
-        if idx < len(ratios):
-            if idx == 0: prize = 10000
-            elif idx == 1: prize = 5000
-            elif idx == 2: prize = 2000
+        prize = 0
+        if idx == 0: prize = 10000
+        elif idx == 1: prize = 5000
+        elif idx == 2: prize = 2000
 
         # オーナーデータ更新
         o = data["owners"].get(owner)
@@ -737,7 +815,7 @@ async def run_lower_race_logic(data, horses_not_entered, current_week, year, cha
         if h:
             if pos == 1:
                 h["wins"] = h.get("wins", 0) + 1
-            h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(1, 3)) # 疲労はGⅠより少なめに
+            h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(1, 3)) 
             progress_growth(h)
             
             h["history"].append({
@@ -750,11 +828,15 @@ async def run_lower_race_logic(data, horses_not_entered, current_week, year, cha
             })
 
         results.append({
-            "pos": pos, "horse_id": hid, "horse_name": hname,
-            "owner": owner, "score": round(score, 2), "prize": prize
+            "pos": pos, 
+            "horse_id": hid, 
+            "horse_name": hname,
+            "owner": owner, 
+            "score": round(score, 2), 
+            "prize": prize,
+            "post_position": entry["post_position"] # 割り振った馬番を使用
         })
 
-    # レース履歴
     data["races"].append({
         "year": year,
         "week": current_week,
@@ -764,7 +846,6 @@ async def run_lower_race_logic(data, horses_not_entered, current_week, year, cha
         "results": results
     })
 
-    # 告知チャンネルに結果を投稿
     if channel:
         await announce_race_results(data, race_info, results, current_week, year, channel, entries_count)
 
@@ -792,23 +873,18 @@ async def run_race_logic(data, is_forced=False):
     g1_held = False
     
     if race_info:
-        # Bot馬の補充
         bot_horses_to_add = []
         
-        # プレイヤー馬のエントリーが10頭に満たない場合、10頭になるまで補充
-        if player_entries_count < MIN_G1_FIELD:
-            
-            # プレイヤー馬のIDを結合してBot馬のIDの重複を避ける
-            existing_ids = set(data["horses"].keys()) 
-            
-            # GⅠに出走させるBot馬の数
-            num_bot_horses = MIN_G1_FIELD - player_entries_count
-            
-            for _ in range(num_bot_horses):
-                # Bot馬はデータファイルに永続保存しない（使い捨て）
-                bot_horse = generate_bot_horse(existing_ids)
-                bot_horses_to_add.append(bot_horse)
-                existing_ids.add(bot_horse["id"])
+        # Bot馬の補充が必要な数の計算
+        num_bot_horses = max(0, MIN_G1_FIELD - player_entries_count)
+        
+        # プレイヤー馬のIDを結合してBot馬のIDの重複を避ける
+        existing_ids = set(data["horses"].keys()) 
+        
+        for _ in range(num_bot_horses):
+            bot_horse = generate_bot_horse(existing_ids)
+            bot_horses_to_add.append(bot_horse)
+            existing_ids.add(bot_horse["id"])
         
         total_entries_count = player_entries_count + len(bot_horses_to_add)
         
@@ -816,32 +892,45 @@ async def run_race_logic(data, is_forced=False):
             
             total, ratios = prize_pool_for_g1()
             field = []
+            current_post_position = 1 # 馬番のカウンタ
             
-            # プレイヤー馬のデータを取得
+            # プレイヤー馬のデータを取得し、馬番を割り振る (登録順)
             for hid in g1_entries:
                 horse = data["horses"].get(hid)
                 if not horse: continue
                 score = calc_race_score(horse, race_info["distance"], race_info["track"])
-                field.append((hid, horse["name"], horse["owner"], score))
+                field.append({
+                    "id": hid, "name": horse["name"], "owner": horse["owner"], 
+                    "score": score, "post_position": current_post_position
+                })
+                current_post_position += 1
                 
-            # Bot馬のデータを追加
+            # Bot馬のデータを追加し、馬番を割り振る (プレイヤー馬の次から)
             for horse in bot_horses_to_add:
                 score = calc_race_score(horse, race_info["distance"], race_info["track"])
-                field.append((horse["id"], horse["name"], horse["owner"], score))
+                field.append({
+                    "id": horse["id"], "name": horse["name"], "owner": horse["owner"], 
+                    "score": score, "post_position": current_post_position
+                })
+                current_post_position += 1
 
 
             # ------------------ 1-1. GⅠレースの実行 ------------------
 
-            field.sort(key=lambda x: x[3], reverse=True)
+            field.sort(key=lambda x: x["score"], reverse=True) # スコアで着順を決定
 
             results = []
-            for idx, (hid, hname, owner, score) in enumerate(field):
+            for idx, entry in enumerate(field):
                 pos = idx + 1
+                hid = entry["id"]
+                owner = entry["owner"]
+                score = entry["score"]
+                hname = entry["name"]
+                
                 prize = 0
                 if idx < len(ratios):
                     prize = int(total * ratios[idx])
                 
-                # プレイヤー馬のみ賞金と勝利数を計上
                 if owner != BOT_OWNER_ID:
                     o = data["owners"].get(owner)
                     if o:
@@ -849,7 +938,6 @@ async def run_race_logic(data, is_forced=False):
                         if pos == 1:
                             o["wins"] = o.get("wins", 0) + 1
 
-                    # プレイヤー馬のみ疲労と成長を更新
                     h = data["horses"].get(hid)
                     if h:
                         if pos == 1:
@@ -867,8 +955,13 @@ async def run_race_logic(data, is_forced=False):
                         })
 
                 results.append({
-                    "pos": pos, "horse_id": hid, "horse_name": hname,
-                    "owner": owner, "score": round(score, 2), "prize": prize
+                    "pos": pos, 
+                    "horse_id": hid, 
+                    "horse_name": hname,
+                    "owner": owner, 
+                    "score": round(score, 2), 
+                    "prize": prize,
+                    "post_position": entry["post_position"] # 割り振った馬番を使用
                 })
 
             data["races"].append({
@@ -880,7 +973,6 @@ async def run_race_logic(data, is_forced=False):
                 "results": results
             })
 
-            # 今週のGⅠエントリー消去 (プレイヤー馬のみ)
             data.get("pending_entries", {}).pop(current_week_str, None)
 
             if channel:
@@ -894,15 +986,11 @@ async def run_race_logic(data, is_forced=False):
     
     # ------------------ 2. 下級レースの実行 ------------------
     
-    # GⅠにエントリーした馬のIDリスト (プレイヤー馬のみ)
     entered_player_horses_id = set(g1_entries) 
-    # 全ての現役プレイヤー馬のIDリスト
     all_player_horses_id = set([hid for hid, h in data["horses"].items() if h["owner"] != BOT_OWNER_ID]) 
     
-    # GⅠにエントリーしなかったプレイヤー馬のIDリスト
     horses_not_entered = list(all_player_horses_id - entered_player_horses_id)
     
-    # 下級レースの実行
     await run_lower_race_logic(data, horses_not_entered, current_week, data['season']['year'], channel)
 
     # ------------------ 3. 週の進行 ------------------
@@ -956,7 +1044,7 @@ async def daily_pre_announcement_task():
             f"🔔 **【出走締切間近のお知らせ】** 🔔\n"
             f"現在のシーズン: {data['season']['year']}年 第{current_week}週\n"
             f"本日19:00 (JST) 開催のGⅠ「**{race_info['name']}**」の出走登録は間もなく締め切られます！\n"
-            f"現在のプレイヤーエントリー数: **{len(entries)}**頭 (10頭に満たない場合はBot馬が補充されます)\n"
+            f"現在のプレイヤーエントリー数: **{len(entries)}**頭 ({MIN_G1_FIELD}頭に満たない場合はBot馬が補充されます)\n"
             f"出走登録は `!entry <ID>` コマンドで！"
         )
         
