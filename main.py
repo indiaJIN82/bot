@@ -55,6 +55,8 @@ MAX_HORSES_PER_OWNER = 5
 MAX_ENTRIES_PER_WEEK = 4 
 # GⅠの最低出走頭数（これに満たない場合Bot馬を補充）
 MIN_G1_FIELD = 10 
+# GⅠが開催される最大の日数（週数）
+MAX_G1_DAY = 30 
 
 async def load_data():
     """データをロードし、存在しない場合は初期データを作成して保存する"""
@@ -70,12 +72,12 @@ async def load_data():
     
     if not os.path.exists(DATA_FILE):
         today = datetime.now(JST)
-        # 週の初期化ロジック (簡易的なもの)
-        current_week = 1 
         year = today.year
         month = today.month
+        day_of_month = today.day 
         
-        default_data["season"] = {"year": year, "month": month, "week": current_week}
+        # 【修正箇所】シーズンを現実の日付（年・月・日）で初期化
+        default_data["season"] = {"year": year, "month": month, "day": day_of_month}
         
         async with aiofiles.open(DATA_FILE, "w") as f:
             await f.write(json.dumps(default_data, ensure_ascii=False, indent=2))
@@ -89,6 +91,13 @@ async def load_data():
             data["pending_entries"] = {}
         if "announce_channel" not in data:
              data["announce_channel"] = None
+        
+        # 過去のデータ構造をチェックし、'week'があれば'day'に移行
+        if "week" in data["season"]:
+            data["season"]["day"] = data["season"].pop("week")
+            # 月がない場合は現在の月に設定（応急処置）
+            if "month" not in data["season"]:
+                 data["season"]["month"] = datetime.now(JST).month
         
         # 芝・ダート適性、お気に入りのデータ移行（既存の馬にも適性/favoriteを付与）
         for hid, horse in data["horses"].items():
@@ -106,7 +115,8 @@ async def save_data(data):
         await f.write(json.dumps(data, ensure_ascii=False, indent=2))
 
 def default_schedule():
-    """レーススケジュール定義（キーは文字列）"""
+    """レーススケジュール定義（キーは文字列。第1週〜第30週に固定のGⅠを割り当てる）"""
+    # 30個のGⅠを、シーズンの1日から30日に対応させる
     return {
         "1":  {"name": "京都金杯", "distance": 1600, "track": "芝"},
         "2":  {"name": "中山金杯", "distance": 2000, "track": "芝"},
@@ -271,15 +281,19 @@ def generate_commentary(race_info, results, entries_count):
 
     return random.choice(commentary)
 
-async def announce_race_results(data, race_info, results, week, year, channel, entries_count):
-    
+async def announce_race_results(data, race_info, results, day, month, year, channel, entries_count):
+    # 【修正箇所】引数をday/month/yearに変更し、表示を修正
     commentary = generate_commentary(race_info, results, entries_count) 
     
+    # 日をそのまま週として表示
+    week_display = day
+    
     if race_info['name'].startswith("GⅠ"):
-         title = f"🎉 レース結果速報 - {year}年 第{week}週 🎉"
+         title = f"🎉 レース結果速報 - {year}年 {month}月 第{week_display}週 🎉"
          race_line = f"**【{race_info['name']}】** 距離:{race_info['distance']}m / 馬場:{race_info['track']} / **{entries_count}頭立て**"
     else:
-         title = f"📢 下級レース結果 - {year}年 第{week}週"
+         # GⅠがない日（31日など）でも下級レースは動くため、レース名に応じて調整
+         title = f"📢 下級レース結果 - {year}年 {month}月 第{week_display}週"
          race_line = f"**【{race_info['name']}】** 距離:{race_info['distance']}m / 馬場:{race_info['track']} / **{entries_count}頭立て**"
     
     msg_lines = [
@@ -525,7 +539,7 @@ async def myhorses(ctx):
         )
     await ctx.reply("\n".join(lines))
 
-@bot.command(name="entry", help="今週のGⅠに出走登録します: 例) !entry H12345")
+@bot.command(name="entry", help="本日のGⅠに出走登録します: 例) !entry H12345")
 async def entry(ctx, horse_id: str):
     data = await load_data()
     uid = str(ctx.author.id)
@@ -540,90 +554,101 @@ async def entry(ctx, horse_id: str):
         await ctx.reply("この馬は疲労が高すぎます。今週は休ませましょう。")
         return
 
-    current_week = data["season"]["week"]
+    current_day = data["season"]["day"]
+    
+    if current_day > MAX_G1_DAY:
+         await ctx.reply(f"本日({current_day}日)はGⅠ開催日ではないため、エントリーできません。")
+         return
+         
     pending = data.get("pending_entries", {})
-    week_key = str(current_week)
+    day_key = str(current_day)
     
-    if week_key not in pending:
-        pending[week_key] = []
+    if day_key not in pending:
+        pending[day_key] = []
     
-    if horse_id in pending[week_key]:
-        await ctx.reply("すでに今週のレースにエントリー済みです。")
+    if horse_id in pending[day_key]:
+        await ctx.reply("すでに本日のレースにエントリー済みです。")
         return
 
-    owner_entries = [hid for hid in pending[week_key] if data['horses'][hid]['owner'] == uid]
+    owner_entries = [hid for hid in pending[day_key] if data['horses'][hid]['owner'] == uid]
     if len(owner_entries) >= MAX_ENTRIES_PER_WEEK:
-         await ctx.reply(f"今週のエントリーは**{MAX_ENTRIES_PER_WEEK}頭**が上限です。すでに{len(owner_entries)}頭がエントリー済みです。")
+         # 日毎開催なので、エントリー数制限は厳密には週ごとだが、ここでは日ごとに適用
+         await ctx.reply(f"本日のエントリーは**{MAX_ENTRIES_PER_WEEK}頭**が上限です。すでに{len(owner_entries)}頭がエントリー済みです。")
          return
 
 
-    pending[week_key].append(horse_id)
+    pending[day_key].append(horse_id)
     data["pending_entries"] = pending
     await save_data(data)
 
-    await ctx.reply(f"出走登録完了！ 今週({current_week}週)のGⅠに **{horse['name']}** をエントリーしました。")
+    await ctx.reply(f"出走登録完了！ 本日(第{current_day}週)のGⅠに **{horse['name']}** をエントリーしました。")
     
-@bot.command(name="entries", help="今週のGⅠレースの出馬表を表示します")
+@bot.command(name="entries", help="本日のGⅠレースの出馬表を表示します")
 async def entries(ctx):
     data = await load_data()
-    current_week = data["season"]["week"]
-    current_week_str = str(current_week)
+    current_day = data["season"]["day"]
+    current_month = data["season"]["month"]
+    current_year = data["season"]["year"]
+    current_day_str = str(current_day)
     
-    race_info = data["schedule"].get(current_week_str)
+    if current_day > MAX_G1_DAY:
+        await ctx.reply(f"{current_year}年{current_month}月 第{current_day}日（第{current_day}週）はGⅠ開催日ではありません。")
+        return
+        
+    race_info = data["schedule"].get(current_day_str)
     
     if not race_info:
-        await ctx.reply(f"今週({current_week}週)はGⅠはありません。")
+        await ctx.reply(f"本日({current_day}日)はGⅠはありません。（スケジュールに定義されていません）")
         return
     
-    entries_list = data.get("pending_entries", {}).get(current_week_str, [])
+    entries_list = data.get("pending_entries", {}).get(current_day_str, [])
     
     if not entries_list:
-        await ctx.reply(f"今週のGⅠ「**{race_info['name']}**」にエントリーされている馬はいません。`!entry <ID>` で登録してください！")
+        await ctx.reply(f"本日のGⅠ「**{race_info['name']}**」にエントリーされている馬はいません。`!entry <ID>` で登録してください！")
         return
 
     # GⅠレース情報
     header = [
-        f"**🏆 今週のGⅠ出馬表: {race_info['name']}**",
+        f"**🏆 {current_year}年{current_month}月 第{current_day}週 のGⅠ出馬表: {race_info['name']}**",
         f"距離: {race_info['distance']}m / 馬場: {race_info['track']}",
         "------------------------------------"
     ]
     
     entries_data = []
     
+    # 登録順に馬番を割り振る
+    post_position_counter = 1
     for hid in entries_list:
         horse = data["horses"].get(hid)
         if not horse:
             continue
             
+        # Bot馬はentriesコマンドでは表示しない
+        if horse["owner"] == BOT_OWNER_ID:
+             continue
+        
         # オーナー名を取得
         owner_name = "不明なオーナー"
-        if horse["owner"] == BOT_OWNER_ID:
-             # Bot馬はentriesコマンドでは表示しない（プレイヤーの視認性向上のため）
-             continue
-        else:
-            try:
-                owner_user = bot.get_user(int(horse["owner"])) or await bot.fetch_user(int(horse["owner"]))
-                owner_name = owner_user.display_name
-            except:
-                pass
+        try:
+            owner_user = bot.get_user(int(horse["owner"])) or await bot.fetch_user(int(horse["owner"]))
+            owner_name = owner_user.display_name
+        except:
+            pass
             
         entries_data.append({
             "name": horse["name"],
             "id": hid,
             "owner": owner_name,
             "fatigue": horse.get("fatigue", 0),
-            "wins": horse.get("wins", 0)
+            "wins": horse.get("wins", 0),
+            "post_position": post_position_counter # 登録順に馬番を付与
         })
+        post_position_counter += 1
 
     if not entries_data:
-        await ctx.reply(f"今週のGⅠ「**{race_info['name']}**」にエントリーされているプレイヤー馬はいません。`!entry <ID>` で登録してください！")
+        await ctx.reply(f"本日のGⅠ「**{race_info['name']}**」にエントリーされているプレイヤー馬はいません。`!entry <ID>` で登録してください！")
         return
         
-    # 馬番を登録順に割り振る (1から始まる)
-    # entries_listの順序が登録順を保っているため、そのインデックスを使用
-    for i, entry in enumerate(entries_data):
-         entry["post_position"] = i + 1 
-
     # 馬番順にソートして表示
     entries_data.sort(key=lambda x: x["post_position"])
 
@@ -704,26 +729,42 @@ async def rank(ctx, category: str = "prize"):
             text += f"{i+1}. {username}: {wins}勝\n"
         await ctx.reply("勝利数ランキング TOP10:\n" + (text if text else "該当者なし"))
 
-@bot.command(name="schedule", help="今週のGⅠ情報を表示します")
+@bot.command(name="schedule", help="本日のGⅠ情報を表示します")
 async def schedule(ctx):
     if not os.path.exists(DATA_FILE):
         await ctx.reply("データがまだ初期化されていません。`!newhorse` コマンドを実行してデータを初期化してください。")
         return
         
     data = await load_data()
-    week_str = str(data["season"]["week"])
+    current_day = data["season"]["day"]
+    current_month = data["season"]["month"]
+    current_year = data["season"]["year"]
+    day_str = str(current_day)
     
-    race = data["schedule"].get(week_str)
+    if current_day > MAX_G1_DAY:
+        await ctx.reply(f"{current_year}年{current_month}月 第{current_day}日（第{current_day}週）はGⅠ開催日ではありません。")
+        return
+        
+    race = data["schedule"].get(day_str)
     
     if not race:
-        await ctx.reply(f"今週({data['season']['week']}週)はGⅠはありません。")
+        await ctx.reply(f"本日({current_day}日)はGⅠはありません。（スケジュールに定義されていません）")
         return
-    await ctx.reply(f"今週({data['season']['week']}週)のGⅠ: **{race['name']}** / 距離:{race['distance']}m / トラック:{race['track']}")
+        
+    # 日をそのまま週として表示
+    await ctx.reply(
+        f"本日({current_year}年{current_month}月 第{current_day}週)のGⅠ: "
+        f"**{race['name']}** / 距離:{race['distance']}m / トラック:{race['track']}"
+    )
 
 @bot.command(name="season", help="シーズン情報を表示します")
 async def season(ctx):
     data = await load_data()
-    await ctx.reply(f"シーズン: {data['season']['year']}年 / 第{data['season']['week']}週")
+    # 日をそのまま週として表示
+    current_day = data['season']['day']
+    current_month = data['season']['month']
+    current_year = data['season']['year']
+    await ctx.reply(f"シーズン: {current_year}年 {current_month}月 / 第{current_day}週")
 
 @bot.command(name="racehistory", help="馬の過去のレース結果を表示します: 例) !racehistory H12345")
 async def racehistory(ctx, horse_id: str):
@@ -744,25 +785,30 @@ async def racehistory(ctx, horse_id: str):
 
     lines = [f"**{horse['name']}** のレース履歴:"]
     for r in horse["history"]:
+        # 履歴データには month と day が含まれるようになった
+        day = r.get('day', 'N/A')
+        month = r.get('month', 'N/A')
+        year = r.get('year', 'N/A')
         lines.append(
-            f" - {r['year']}年 {r['week']}週 {r['race']} ({r['pos']}着) "
+            f" - {year}年 {month}月 第{day}週 {r['race']} ({r['pos']}着) "
             f"賞金:{r['prize']} (スコア:{r['score']:.2f})"
         )
     await ctx.reply("\n".join(lines))
 
 # ----------------- 下級レース処理関数 -----------------
 
-async def run_lower_race_logic(data, horses_not_entered, current_week, year, channel):
+async def run_lower_race_logic(data, horses_not_entered, current_day, current_month, current_year, channel):
     """
     GⅠに出走しなかった馬を対象に下級レースを自動開催する
     """
+    # 【修正箇所】引数をday/month/yearに変更
     
     entries = [hid for hid in horses_not_entered if data["horses"].get(hid) and data["horses"][hid]["owner"] != BOT_OWNER_ID]
     entries_count = len(entries)
     
     if entries_count < 2:
         if channel:
-             await channel.send("ℹ️ 下級レースはエントリー馬が2頭未満のため開催されませんでした。")
+             await channel.send(f"ℹ️ {current_year}年{current_month}月 第{current_day}週 の下級レースはエントリー馬が2頭未満のため開催されませんでした。")
         return
 
     # 下級レースのランダムな設定
@@ -818,9 +864,11 @@ async def run_lower_race_logic(data, horses_not_entered, current_week, year, cha
             h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(1, 3)) 
             progress_growth(h)
             
+            # 【修正箇所】履歴に year, month, day を保存
             h["history"].append({
-                "year": year,
-                "week": current_week,
+                "year": current_year,
+                "month": current_month,
+                "day": current_day,
                 "race": race_info["name"],
                 "pos": pos,
                 "score": round(score, 2),
@@ -837,9 +885,11 @@ async def run_lower_race_logic(data, horses_not_entered, current_week, year, cha
             "post_position": entry["post_position"] # 割り振った馬番を使用
         })
 
+    # 【修正箇所】レース記録に year, month, day を保存
     data["races"].append({
-        "year": year,
-        "week": current_week,
+        "year": current_year,
+        "month": current_month,
+        "day": current_day,
         "name": race_info["name"],
         "distance": race_info["distance"],
         "track": race_info["track"],
@@ -847,7 +897,8 @@ async def run_lower_race_logic(data, horses_not_entered, current_week, year, cha
     })
 
     if channel:
-        await announce_race_results(data, race_info, results, current_week, year, channel, entries_count)
+        # 【修正箇所】告知関数に day, month, year を渡す
+        await announce_race_results(data, race_info, results, current_day, current_month, current_year, channel, entries_count)
 
 # --------------- レース処理関数（タスクとforceraceで共通利用） ---------------
 
@@ -855,10 +906,17 @@ async def run_race_logic(data, is_forced=False):
     """
     GⅠレースを実行し、その後下級レースを実行する
     """
-    current_week = data["season"]["week"]
-    current_week_str = str(current_week)
+    current_day = data["season"]["day"]
+    current_month = data["season"]["month"]
+    current_year = data["season"]["year"]
+    current_day_str = str(current_day)
     
-    race_info = data["schedule"].get(current_week_str)
+    # GⅠは1日から30日に開催（31日はGⅠなし）
+    if current_day <= MAX_G1_DAY:
+        race_info = data["schedule"].get(current_day_str)
+    else:
+        race_info = None # GⅠ無し
+
     
     channel = None
     channel_id = data.get("announce_channel")
@@ -867,12 +925,12 @@ async def run_race_logic(data, is_forced=False):
 
     # ------------------ 1. GⅠレースの実行準備 ------------------
     
-    g1_entries = data.get("pending_entries", {}).get(current_week_str, [])
+    g1_entries = data.get("pending_entries", {}).get(current_day_str, [])
     player_entries_count = len(g1_entries) 
     
     g1_held = False
     
-    if race_info:
+    if race_info: # GⅠが予定されている日（1〜30日）
         bot_horses_to_add = []
         
         # Bot馬の補充が必要な数の計算
@@ -945,9 +1003,11 @@ async def run_race_logic(data, is_forced=False):
                         h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(2, 4))
                         progress_growth(h)
                         
+                        # 【修正箇所】履歴に year, month, day を保存
                         h["history"].append({
-                            "year": data["season"]["year"],
-                            "week": current_week,
+                            "year": current_year,
+                            "month": current_month,
+                            "day": current_day,
                             "race": race_info["name"],
                             "pos": pos,
                             "score": round(score, 2),
@@ -964,41 +1024,58 @@ async def run_race_logic(data, is_forced=False):
                     "post_position": entry["post_position"] # 割り振った馬番を使用
                 })
 
+            # 【修正箇所】レース記録に year, month, day を保存
             data["races"].append({
-                "year": data["season"]["year"],
-                "week": current_week,
+                "year": current_year,
+                "month": current_month,
+                "day": current_day,
                 "name": race_info["name"],
                 "distance": race_info["distance"],
                 "track": race_info["track"],
                 "results": results
             })
 
-            data.get("pending_entries", {}).pop(current_week_str, None)
+            data.get("pending_entries", {}).pop(current_day_str, None)
 
             if channel:
-                await announce_race_results(data, race_info, results, current_week, data['season']['year'], channel, total_entries_count)
+                # 【修正箇所】告知関数に day, month, year を渡す
+                await announce_race_results(data, race_info, results, current_day, current_month, current_year, channel, total_entries_count)
             
             g1_held = True
 
         elif race_info and total_entries_count < 2:
             if channel:
-                await channel.send(f"⚠️ 今週のGⅠ「{race_info['name']}」はプレイヤー馬とBot馬を合わせても2頭未満のため開催されませんでした。")
+                await channel.send(f"⚠️ {current_year}年{current_month}月 第{current_day}週 のGⅠ「{race_info['name']}」はプレイヤー馬とBot馬を合わせても2頭未満のため開催されませんでした。")
     
     # ------------------ 2. 下級レースの実行 ------------------
     
     entered_player_horses_id = set(g1_entries) 
     all_player_horses_id = set([hid for hid, h in data["horses"].items() if h["owner"] != BOT_OWNER_ID]) 
     
+    # GⅠにエントリーしなかったプレイヤー馬、またはGⅠが開催されなかった日（31日など）の全プレイヤー馬
     horses_not_entered = list(all_player_horses_id - entered_player_horses_id)
     
-    await run_lower_race_logic(data, horses_not_entered, current_week, data['season']['year'], channel)
+    # 【修正箇所】下級レース実行関数に day, month, year を渡す
+    await run_lower_race_logic(data, horses_not_entered, current_day, current_month, current_year, channel)
 
-    # ------------------ 3. 週の進行 ------------------
+    # ------------------ 3. 日の進行 ------------------
 
     if not is_forced:
-        data["season"]["week"] += 1
-        if data["season"]["week"] > 30:
-            data["season"]["week"] = 1
+        data["season"]["day"] += 1
+        
+        current_year = data["season"]["year"]
+        current_month = data["season"]["month"]
+        
+        # 該当年月の最大日数を取得 (閏年対応)
+        try:
+             max_days = calendar.monthrange(current_year, current_month)[1]
+        except ValueError:
+             # 月のデータがおかしい場合（例: 0や13）、現在の月で強制的に28日で進行させる（初期化ミスの可能性）
+             max_days = 28
+        
+        # 【修正箇所】日の進行と月/年のリセットロジック
+        if data["season"]["day"] > max_days:
+            data["season"]["day"] = 1
             data["season"]["month"] += 1
             if data["season"]["month"] > 12:
                 data["season"]["month"] = 1
@@ -1035,18 +1112,30 @@ async def daily_pre_announcement_task():
     if not channel:
         return
 
-    current_week = data["season"]["week"]
-    race_info = data["schedule"].get(str(current_week))
-    entries = data.get("pending_entries", {}).get(str(current_week), [])
+    current_day = data["season"]["day"]
+    current_month = data["season"]["month"]
+    current_year = data["season"]["year"]
     
-    if race_info:
+    race_info = data["schedule"].get(str(current_day))
+    entries = data.get("pending_entries", {}).get(str(current_day), [])
+    
+    # GⅠが開催される日（1日〜30日）のみ告知
+    if race_info and current_day <= MAX_G1_DAY:
         await channel.send(
             f"🔔 **【出走締切間近のお知らせ】** 🔔\n"
-            f"現在のシーズン: {data['season']['year']}年 第{current_week}週\n"
+            f"現在のシーズン: {current_year}年 {current_month}月 第{current_day}週\n"
             f"本日19:00 (JST) 開催のGⅠ「**{race_info['name']}**」の出走登録は間もなく締め切られます！\n"
             f"現在のプレイヤーエントリー数: **{len(entries)}**頭 ({MIN_G1_FIELD}頭に満たない場合はBot馬が補充されます)\n"
             f"出走登録は `!entry <ID>` コマンドで！"
         )
+    elif current_day == 31:
+        await channel.send(
+             f"🔔 **【下級レース開催のお知らせ】** 🔔\n"
+             f"現在のシーズン: {current_year}年 {current_month}月 第{current_day}週\n"
+             f"本日({current_day}日)はGⅠ開催はありませんが、下級レースが開催されます。\n"
+             f"GⅠにエントリーしていない馬は自動的に出走します。"
+        )
+
         
 @daily_pre_announcement_task.before_loop
 async def before_daily_pre_announcement_task():
@@ -1054,21 +1143,22 @@ async def before_daily_pre_announcement_task():
 
 # --------------- 管理系 ---------------
 
-@bot.command(name="forcerace", help="[管理] 今週のレースを即時開催します（週は進めない）")
+@bot.command(name="forcerace", help="[管理] 本日のレースを即時開催します（日は進めない）")
 @commands.has_permissions(administrator=True)
 async def forcerace(ctx):
     data = await load_data()
     
-    await ctx.reply("今週のレース開催を試みます（週は進行しません）。")
+    await ctx.reply("本日のレース開催を試みます（日は進行しません）。")
     
     race_held, race_info, total_entries_count = await run_race_logic(data, is_forced=True)
     
     if race_held:
         await ctx.send("GⅠおよび下級レースの処理が完了しました。結果は告知チャンネルをご確認ください。")
-    elif race_info:
+    elif race_info is None and data["season"]["day"] <= MAX_G1_DAY:
         await ctx.send("GⅠエントリー馬が2頭未満でした。下級レースの結果と合わせて告知チャンネルをご確認ください。")
     else:
-        await ctx.send("今週はレースが予定されていませんでした。下級レースの結果と合わせて告知チャンネルをご確認ください。")
+        # Day 31 or other non-GⅠ day
+        await ctx.send("本日はGⅠが予定されていませんでした。下級レースの結果と合わせて告知チャンネルをご確認ください。")
 
 
 # --------------- 起動 ---------------
