@@ -119,36 +119,36 @@ def default_schedule():
     """レーススケジュール定義（キーは文字列。第1週〜第30週に固定のGⅠを割り当てる）"""
     # 30個のGⅠを、シーズンの1日から30日に対応させる
     return {
-        "1":  {"name": "京都金杯", "distance": 1600, "track": "芝"},
-        "2":  {"name": "中山金杯", "distance": 2000, "track": "芝"},
-        "3":  {"name": "フェアリーS", "distance": 1600, "track": "芝"},
-        "4":  {"name": "京成杯", "distance": 2000, "track": "芝"},
-        "5":  {"name": "根岸S", "distance": 1400, "track": "ダート"},
-        "6":  {"name": "東京新聞杯", "distance": 1600, "track": "芝"},
-        "7":  {"name": "共同通信杯", "distance": 1800, "track": "芝"},
-        "8":  {"name": "フェブラリーS", "distance": 1600, "track": "ダート"},
-        "9":  {"name": "高松宮記念", "distance": 1200, "track": "芝"},
-        "10": {"name": "大阪杯", "distance": 2000, "track": "芝"},
-        "11": {"name": "桜花賞", "distance": 1600, "track": "芝"},
-        "12": {"name": "皐月賞", "distance": 2000, "track": "芝"},
-        "13": {"name": "天皇賞（春）", "distance": 3200, "track": "芝"},
-        "14": {"name": "NHKマイルC", "distance": 1600, "track": "芝"},
-        "15": {"name": "日本ダービー", "distance": 2400, "track": "芝"},
-        "16": {"name": "安田記念", "distance": 1600, "track": "芝"},
-        "17": {"name": "宝塚記念", "distance": 2200, "track": "芝"},
-        "18": {"name": "スプリンターズS", "distance": 1200, "track": "芝"},
-        "19": {"name": "秋華賞", "distance": 2000, "track": "芝"},
-        "20": {"name": "菊花賞", "distance": 3000, "track": "芝"},
-        "21": {"name": "天皇賞（秋）", "distance": 2000, "track": "芝"},
-        "22": {"name": "エリザベス女王杯", "distance": 2200, "track": "芝"},
-        "23": {"name": "マイルCS", "distance": 1600, "track": "芝"},
-        "24": {"name": "ジャパンカップ", "distance": 2400, "track": "芝"},
-        "25": {"name": "チャンピオンズC", "distance": 1800, "track": "ダート"},
-        "26": {"name": "阪神JF", "distance": 1600, "track": "芝"},
-        "27": {"name": "朝日杯FS", "distance": 1600, "track": "芝"},
-        "28": {"name": "東京大賞典", "distance": 2000, "track": "ダート"},
-        "29": {"name": "ホープフルS", "distance": 2000, "track": "芝"},
-        "30": {"name": "有馬記念", "distance": 2500, "track": "芝"},
+        "1":  {"name": "GⅠ 京都金杯", "distance": 1600, "track": "芝"},
+        "2":  {"name": "GⅠ 中山金杯", "distance": 2000, "track": "芝"},
+        "3":  {"name": "GⅠ フェアリーS", "distance": 1600, "track": "芝"},
+        "4":  {"name": "GⅠ 京成杯", "distance": 2000, "track": "芝"},
+        "5":  {"name": "GⅠ 根岸S", "distance": 1400, "track": "ダート"},
+        "6":  {"name": "GⅠ 東京新聞杯", "distance": 1600, "track": "芝"},
+        "7":  {"name": "GⅠ 共同通信杯", "distance": 1800, "track": "芝"},
+        "8":  {"name": "GⅠ フェブラリーS", "distance": 1600, "track": "ダート"},
+        "9":  {"name": "GⅠ 高松宮記念", "distance": 1200, "track": "芝"},
+        "10": {"name": "GⅠ 大阪杯", "distance": 2000, "track": "芝"},
+        "11": {"name": "GⅠ 桜花賞", "distance": 1600, "track": "芝"},
+        "12": {"name": "GⅠ 皐月賞", "distance": 2000, "track": "芝"},
+        "13": {"name": "GⅠ 天皇賞（春）", "distance": 3200, "track": "芝"},
+        "14": {"name": "GⅠ NHKマイルC", "distance": 1600, "track": "芝"},
+        "15": {"name": "GⅠ 日本ダービー", "distance": 2400, "track": "芝"},
+        "16": {"name": "GⅠ 安田記念", "distance": 1600, "track": "芝"},
+        "17": {"name": "GⅠ 宝塚記念", "distance": 2200, "track": "芝"},
+        "18": {"name": "GⅠ スプリンターズS", "distance": 1200, "track": "芝"},
+        "19": {"name": "GⅠ 秋華賞", "distance": 2000, "track": "芝"},
+        "20": {"name": "GⅠ 菊花賞", "distance": 3000, "track": "芝"},
+        "21": {"name": "GⅠ 天皇賞（秋）", "distance": 2000, "track": "芝"},
+        "22": {"name": "GⅠ エリザベス女王杯", "distance": 2200, "track": "芝"},
+        "23": {"name": "GⅠ マイルCS", "distance": 1600, "track": "芝"},
+        "24": {"name": "GⅠ ジャパンカップ", "distance": 2400, "track": "芝"},
+        "25": {"name": "GⅠ チャンピオンズC", "distance": 1800, "track": "ダート"},
+        "26": {"name": "GⅠ 阪神JF", "distance": 1600, "track": "芝"},
+        "27": {"name": "GⅠ 朝日杯FS", "distance": 1600, "track": "芝"},
+        "28": {"name": "GⅠ 東京大賞典", "distance": 2000, "track": "ダート"},
+        "29": {"name": "GⅠ ホープフルS", "distance": 2000, "track": "芝"},
+        "30": {"name": "GⅠ 有馬記念", "distance": 2500, "track": "芝"},
     }
 
 def new_horse_id(data):
@@ -239,9 +239,8 @@ def prize_pool_for_g1():
 
 def prize_pool_for_lower():
     """下級レースの賞金設定"""
-    total = 10000 
-    return total, [1.0, 0.5, 0.2] 
-
+    total = 17000 
+    return total, [10000/17000, 5000/17000, 2000/17000] # 10000, 5000, 2000
 
 def progress_growth(horse):
     g = horse["stats"]["growth"]
@@ -902,6 +901,118 @@ async def racehistory(ctx, horse_id: str):
             f"賞金:{r['prize']} (スコア:{r['score']:.2f})"
         )
     await ctx.reply("\n".join(lines))
+
+@bot.command(name="allraces", help="過去の全レース結果の概要を最新15件表示します")
+async def allraces(ctx):
+    data = await load_data()
+
+    races = data.get("races", [])
+    if not races:
+        await ctx.reply("過去に開催されたレースの記録はありません。")
+        return
+
+    # 最新の15件を取得し、新しい順に並べ替える
+    latest_races = races[-15:][::-1]
+
+    lines = ["**🏆 過去のレース結果 (最新15件)**", "------------------------------------"]
+
+    for race in latest_races:
+        year = race.get('year', 'N/A')
+        month = race.get('month', 'N/A')
+        day = race.get('day', 'N/A')
+        race_name = race['name']
+        
+        # 確実に結果が存在することを確認
+        if not race.get("results"):
+            continue 
+
+        # 1着馬の情報
+        winner = race['results'][0]
+        winner_id = winner['owner']
+        winner_name = winner['horse_name']
+        
+        owner_display = "協会生産"
+        if winner_id != BOT_OWNER_ID:
+            try:
+                # オーナーのユーザー名を取得
+                owner_user = bot.get_user(int(winner_id)) or await bot.fetch_user(int(winner_id))
+                owner_display = owner_user.display_name
+            except Exception:
+                owner_display = f"不明なオーナー ({winner_id})"
+
+        
+        lines.append(
+            f"📅 {year}/{month} 第{day}週: **{race_name}** - 🥇{winner_name} (オーナー: {owner_display})"
+        )
+
+    await ctx.reply("\n".join(lines))
+
+# 【新規追加】特定の日の全レース結果を表示するコマンド
+@bot.command(name="raceresults", help="過去のレース全結果を表示します: 例) !raceresults 2024 1 1 (2024年1月 第1週のレース)")
+async def raceresults(ctx, year: int, month: int, day: int):
+    data = await load_data()
+    
+    # 指定された年、月、日のレース結果を検索
+    found_races = [
+        r for r in data["races"] 
+        if r.get("year") == year and r.get("month") == month and r.get("day") == day
+    ]
+    
+    if not found_races:
+        await ctx.reply(f"{year}年{month}月 第{day}週 に開催されたレースの結果は見つかりませんでした。\n(レースは開催日と開催順に記録されます)")
+        return
+    
+    response_lines = []
+        
+    for race in found_races:
+        race_info = {
+            "name": race["name"],
+            "distance": race["distance"],
+            "track": race["track"]
+        }
+        results = race["results"]
+        entries_count = len(results)
+        
+        # 結果表示のヘッダー
+        msg_lines = [
+            "========================",
+            f"**🏆 {race_info['name']} 結果 ({year}年{month}月 第{day}週)**",
+            f"距離: {race_info['distance']}m / 馬場: {race_info['track']} / **{entries_count}頭立て**",
+            "------------------------"
+        ]
+        
+        # 賞金が付く順位を決定 (GⅠは5着まで、下級レースは3着まで)
+        # GⅠは名前に 'GⅠ' が含まれることで判定
+        prize_count = 5 if race_info['name'].startswith("GⅠ") else 3
+
+        for r in results:
+            owner_display = ""
+            if r['owner'] == BOT_OWNER_ID:
+                owner_display = "**協会生産**"
+            else:
+                # オーナーのDiscord表示名を取得
+                try:
+                    owner_user = bot.get_user(int(r['owner'])) or await bot.fetch_user(int(r['owner']))
+                    owner_display = owner_user.display_name
+                except:
+                    owner_display = f"ID:{r['owner']}" # 取得できない場合はIDを表示
+            
+            line = f"**{r['pos']}着** ({r['post_position']}番) **{r['horse_name']}** (オーナー:{owner_display})"
+            
+            # race_historyにはscoreが保存されているが、race_resultsには保存されていないため、prizeのみ表示
+            if r.get('prize', 0) > 0:
+                 line += f" 賞金:{r['prize']}" 
+            
+            msg_lines.append(line)
+        
+        response_lines.extend(msg_lines)
+        response_lines.append("\n") # レース間に空白行を追加
+    
+    # 最後の空行を削除
+    if response_lines and response_lines[-1] == "\n":
+        response_lines.pop()
+
+    await ctx.reply("\n".join(response_lines))
 
 # ----------------- 下級レース処理関数 -----------------
 
