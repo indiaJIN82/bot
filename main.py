@@ -638,8 +638,12 @@ async def myhorses(ctx):
         h = data["horses"][hid]
         s = h["stats"]
         fav_icon = "⭐" if h.get("favorite", False) else " "
+        
+        # レース出走回数を計算
+        race_count = len(h.get("history", []))
+
         lines.append(
-            f"{fav_icon} - {h['name']} (ID: {hid}) / 年齢:{h['age']} / 勝利:{h['wins']} / 疲労:{h['fatigue']} / "
+            f"{fav_icon} - {h['name']} (ID: {hid}) / 年齢:{h['age']} / **レース数:{race_count}** / 勝利:{h['wins']} / 疲労:{h['fatigue']} / "
             f"SPD:{s['speed']} STA:{s['stamina']} TEM:{s['temper']} GRW:{s['growth']} / "
             f"芝:{s.get('turf_apt', 'N/A')} ダ:{s.get('dirt_apt', 'N/A')}" 
         )
@@ -1199,7 +1203,7 @@ async def advance_day(data):
     # 全馬の rest_used_day をリセットし、引退チェック
     for horse_id, horse in list(data["horses"].items()): # イテレーション中に削除するためコピーを使用
         
-        if horse_id == BOT_OWNER_ID:
+        if horse["owner"] == BOT_OWNER_ID:
             # Bot馬は引退させない
             continue
 
