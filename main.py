@@ -60,7 +60,7 @@ BOT_OWNER_ID = "0"
 
 # 最大保有頭数 
 MAX_HORSES_PER_OWNER = 5
-# 1週間に同一オーナーがエントリーできる最大頭数
+# 1週間に同一オーナーがエントリーできる最大頭数（ここでは日毎に適用）
 MAX_ENTRIES_PER_WEEK = 4 
 # GⅠの最低出走頭数（これに満たない場合Bot馬を補充）
 MIN_G1_FIELD = 10 
@@ -85,9 +85,11 @@ async def load_data():
         "day": today.day
     }
 
+    # Supabaseからデータを取得
     res = supabase.table("kv_store").select("value").eq("key", DATA_KEY).execute()
 
     if not res.data:
+        # データがない場合はデフォルトデータを挿入
         supabase.table("kv_store").insert({
             "key": DATA_KEY,
             "value": default_data
@@ -106,6 +108,7 @@ async def load_data():
 
 
 async def save_data(data):
+    # Supabaseにデータを保存（upsertで更新）
     supabase.table("kv_store").upsert({
         "key": DATA_KEY,
         "value": data
@@ -280,7 +283,6 @@ def generate_commentary(race_info, results, entries_count):
     return random.choice(commentary)
 
 async def announce_race_results(data, race_info, results, day, month, year, channel, entries_count):
-    # 【修正箇所】引数をday/month/yearに変更し、表示を修正
     commentary = generate_commentary(race_info, results, entries_count) 
     
     # 日をそのまま週として表示
@@ -290,7 +292,6 @@ async def announce_race_results(data, race_info, results, day, month, year, chan
          title = f"🎉 レース結果速報 - {year}年 {month}月 第{week_display}週 🎉"
          race_line = f"**【{race_info['name']}】** 距離:{race_info['distance']}m / 馬場:{race_info['track']} / **{entries_count}頭立て**"
     else:
-         # GⅠがない日（31日など）でも下級レースは動くため、レース名に応じて調整
          title = f"📢 下級レース結果 - {year}年 {month}月 第{week_display}週"
          race_line = f"**【{race_info['name']}】** 距離:{race_info['distance']}m / 馬場:{race_info['track']} / **{entries_count}頭立て**"
     
@@ -320,6 +321,24 @@ async def announce_race_results(data, race_info, results, day, month, year, chan
         msg_lines.append(line)
         
     await channel.send("\n".join(msg_lines))
+
+# 【新規追加】データ整合性を保つためのヘルパー関数
+def _clean_pending_entry(data, horse_id):
+    """
+    指定された馬IDを、すべてのpending_entriesリストから削除します。
+    馬を引退させる際に呼び出し、参照エラーを防ぎます。
+    """
+    cleaned = False
+    if "pending_entries" in data:
+        # pending_entriesは {day_key: [horse_id, ...]} の形式
+        for day_key in list(data["pending_entries"].keys()):
+            if horse_id in data["pending_entries"][day_key]:
+                data["pending_entries"][day_key].remove(horse_id)
+                cleaned = True
+            # エントリーリストが空になったらキー自体を削除
+            if not data["pending_entries"][day_key]:
+                del data["pending_entries"][day_key]
+    return cleaned
 
 # ----------------- コマンド -----------------
 
@@ -359,8 +378,8 @@ async def confirmreset(ctx):
         await ctx.reply("リセット確認の期限（10秒）が過ぎました。再度 `!resetdata` を実行してください。")
         return
 
-    if os.path.exists(DATA_FILE):
-        supabase.table("kv_store").delete().eq("key", DATA_KEY).execute()
+    # Supabaseのデータを削除
+    supabase.table("kv_store").delete().eq("key", DATA_KEY).execute()
     
     await ctx.reply("✅ **データファイルを削除しました。** Botを再起動すると新しい状態で始まります。")
 
@@ -431,6 +450,9 @@ async def retire(ctx, horse_id: str):
         await ctx.reply("これはあなたの馬ではありません。")
         return
     
+    # 【バグ修正】pending_entriesから馬IDを削除
+    _clean_pending_entry(data, horse_id) 
+    
     data["owners"][uid]["horses"].remove(horse_id)
     del data["horses"][horse_id]
     
@@ -465,6 +487,8 @@ async def massretire(ctx):
         
     # 削除実行
     for hid in to_retire:
+        # 【バグ修正】pending_entriesから馬IDを削除
+        _clean_pending_entry(data, hid) 
         if hid in data["horses"]:
              del data["horses"][hid]
     
@@ -568,9 +592,8 @@ async def entry(ctx, horse_id: str):
         await ctx.reply("すでに本日のレースにエントリー済みです。")
         return
 
-    owner_entries = [hid for hid in pending[day_key] if data['horses'][hid]['owner'] == uid]
+    owner_entries = [hid for hid in pending[day_key] if data['horses'].get(hid) and data['horses'][hid]['owner'] == uid]
     if len(owner_entries) >= MAX_ENTRIES_PER_WEEK:
-         # 日毎開催なので、エントリー数制限は厳密には週ごとだが、ここでは日ごとに適用
          await ctx.reply(f"本日のエントリーは**{MAX_ENTRIES_PER_WEEK}頭**が上限です。すでに{len(owner_entries)}頭がエントリー済みです。")
          return
 
@@ -619,6 +642,7 @@ async def entries(ctx):
     for hid in entries_list:
         horse = data["horses"].get(hid)
         if not horse:
+            # エントリーリストに存在するがhorsesに存在しないIDは無視 (過去のバグ馬ID対策)
             continue
             
         # Bot馬はentriesコマンドでは表示しない
@@ -796,7 +820,6 @@ async def run_lower_race_logic(data, horses_not_entered, current_day, current_mo
     """
     GⅠに出走しなかった馬を対象に下級レースを自動開催する
     """
-    # 【修正箇所】引数をday/month/yearに変更
     
     entries = [hid for hid in horses_not_entered if data["horses"].get(hid) and data["horses"][hid]["owner"] != BOT_OWNER_ID]
     entries_count = len(entries)
@@ -859,7 +882,7 @@ async def run_lower_race_logic(data, horses_not_entered, current_day, current_mo
             h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(1, 3)) 
             progress_growth(h)
             
-            # 【修正箇所】履歴に year, month, day を保存
+            # 履歴に year, month, day を保存
             h["history"].append({
                 "year": current_year,
                 "month": current_month,
@@ -880,19 +903,19 @@ async def run_lower_race_logic(data, horses_not_entered, current_day, current_mo
             "post_position": entry["post_position"] # 割り振った馬番を使用
         })
 
-    # 【修正箇所】レース記録に year, month, day を保存
+    # レース記録に year, month, day を保存
     data["races"].append({
         "year": current_year,
         "month": current_month,
         "day": current_day,
         "name": race_info["name"],
-        "distance": race_info["distance"],
-        "track": race_info["track"],
+        "distance": random_distance,
+        "track": random_track,
         "results": results
     })
 
     if channel:
-        # 【修正箇所】告知関数に day, month, year を渡す
+        # 告知関数に day, month, year を渡す
         await announce_race_results(data, race_info, results, current_day, current_month, current_year, channel, entries_count)
 
 # --------------- レース処理関数（タスクとforceraceで共通利用） ---------------
@@ -920,7 +943,12 @@ async def run_race_logic(data, is_forced=False):
 
     # ------------------ 1. GⅠレースの実行準備 ------------------
     
-    g1_entries = data.get("pending_entries", {}).get(current_day_str, [])
+    g1_entries_raw = data.get("pending_entries", {}).get(current_day_str, [])
+    
+    # 存在しない馬IDを削除（古いバグが残したゴミデータ対策）
+    g1_entries = [hid for hid in g1_entries_raw if hid in data["horses"]]
+    data["pending_entries"][current_day_str] = g1_entries 
+    
     player_entries_count = len(g1_entries) 
     
     g1_held = False
@@ -937,6 +965,8 @@ async def run_race_logic(data, is_forced=False):
         for _ in range(num_bot_horses):
             bot_horse = generate_bot_horse(existing_ids)
             bot_horses_to_add.append(bot_horse)
+            # Bot馬を data["horses"] に追加
+            data["horses"][bot_horse["id"]] = bot_horse 
             existing_ids.add(bot_horse["id"])
         
         total_entries_count = player_entries_count + len(bot_horses_to_add)
@@ -950,7 +980,7 @@ async def run_race_logic(data, is_forced=False):
             # プレイヤー馬のデータを取得し、馬番を割り振る (登録順)
             for hid in g1_entries:
                 horse = data["horses"].get(hid)
-                if not horse: continue
+                # ここで再度のチェックは不要（既にフィルタリング済み）
                 score = calc_race_score(horse, race_info["distance"], race_info["track"])
                 field.append({
                     "id": hid, "name": horse["name"], "owner": horse["owner"], 
@@ -985,6 +1015,7 @@ async def run_race_logic(data, is_forced=False):
                     prize = int(total * ratios[idx])
                 
                 if owner != BOT_OWNER_ID:
+                    # プレイヤー馬の処理
                     o = data["owners"].get(owner)
                     if o:
                         o["balance"] = o.get("balance", 0) + prize
@@ -998,7 +1029,7 @@ async def run_race_logic(data, is_forced=False):
                         h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(2, 4))
                         progress_growth(h)
                         
-                        # 【修正箇所】履歴に year, month, day を保存
+                        # 履歴に year, month, day を保存
                         h["history"].append({
                             "year": current_year,
                             "month": current_month,
@@ -1008,6 +1039,13 @@ async def run_race_logic(data, is_forced=False):
                             "score": round(score, 2),
                             "prize": prize
                         })
+                else:
+                    # Bot馬の処理（疲労と成長のみ）
+                    h = data["horses"].get(hid)
+                    if h:
+                        h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(2, 4))
+                        progress_growth(h)
+
 
                 results.append({
                     "pos": pos, 
@@ -1019,7 +1057,7 @@ async def run_race_logic(data, is_forced=False):
                     "post_position": entry["post_position"] # 割り振った馬番を使用
                 })
 
-            # 【修正箇所】レース記録に year, month, day を保存
+            # レース記録に year, month, day を保存
             data["races"].append({
                 "year": current_year,
                 "month": current_month,
@@ -1030,10 +1068,11 @@ async def run_race_logic(data, is_forced=False):
                 "results": results
             })
 
+            # エントリーリストをクリア
             data.get("pending_entries", {}).pop(current_day_str, None)
 
             if channel:
-                # 【修正箇所】告知関数に day, month, year を渡す
+                # 告知関数に day, month, year を渡す
                 await announce_race_results(data, race_info, results, current_day, current_month, current_year, channel, total_entries_count)
             
             g1_held = True
@@ -1047,10 +1086,10 @@ async def run_race_logic(data, is_forced=False):
     entered_player_horses_id = set(g1_entries) 
     all_player_horses_id = set([hid for hid, h in data["horses"].items() if h["owner"] != BOT_OWNER_ID]) 
     
-    # GⅠにエントリーしなかったプレイヤー馬、またはGⅠが開催されなかった日（31日など）の全プレイヤー馬
+    # GⅠにエントリーしなかったプレイヤー馬
     horses_not_entered = list(all_player_horses_id - entered_player_horses_id)
     
-    # 【修正箇所】下級レース実行関数に day, month, year を渡す
+    # 下級レース実行関数に day, month, year を渡す
     await run_lower_race_logic(data, horses_not_entered, current_day, current_month, current_year, channel)
 
     # ------------------ 3. 日の進行 ------------------
@@ -1068,7 +1107,7 @@ async def run_race_logic(data, is_forced=False):
              # 月のデータがおかしい場合（例: 0や13）、現在の月で強制的に28日で進行させる（初期化ミスの可能性）
              max_days = 28
         
-        # 【修正箇所】日の進行と月/年のリセットロジック
+        # 日の進行と月/年のリセットロジック
         if data["season"]["day"] > max_days:
             data["season"]["day"] = 1
             data["season"]["month"] += 1
