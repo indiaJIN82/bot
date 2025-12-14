@@ -726,7 +726,7 @@ async def unentry(ctx, horse_id: str):
     
     await ctx.reply(f"✅ **{horse['name']}** の本日(第{current_day}週)のレースへの出走登録を取り消しました。")
 
-@bot.command(name="schedule", help="現在のGⅠレーススケジュールと日付を表示します")
+@bot.command(name="schedule", help="本日と翌日のGⅠレーススケジュールを表示します")
 async def schedule(ctx):
     data = await load_data()
     current_day = data["season"]["day"]
@@ -739,22 +739,33 @@ async def schedule(ctx):
         "---"
     ]
     
-    # 今後のGⅠスケジュール（現在の日付以降）を表示
     schedule_lines = []
     
-    # 最大30日（週）分のGⅠスケジュールをチェック
-    for day in range(current_day, MAX_G1_DAY + 1):
+    # 本日と翌日（2日分）のみをチェック
+    days_to_check = [current_day, current_day + 1]
+    
+    for day in days_to_check:
         day_key = str(day)
         race_info = data["schedule"].get(day_key)
         
+        if day > MAX_G1_DAY:
+             # シーズン終了後の処理
+             schedule_lines.append(f"**第{day}週**: シーズン終了のためGⅠ開催はありません。")
+             break
+        
         if race_info:
-            status = "本日開催" if day == current_day else "今後開催"
+            status = "本日開催" if day == current_day else "明日開催予定"
             schedule_lines.append(
-                f"**第{day}週**: {race_info['name']} ({race_info['distance']}m/{race_info['track']}) - *{status}*"
+                f"**第{day}週**: {race_info['name']} ({race_info['distance']}m/{race_info['track']}) - **{status}**"
             )
+        elif day == current_day:
+            schedule_lines.append(f"**第{day}週 (本日)**: GⅠ開催はありません。（定刻に下級レースを実行します）")
+        elif day == current_day + 1:
+            schedule_lines.append(f"**第{day}週 (明日)**: GⅠ開催はありません。（定刻に下級レースを実行します）")
 
-    if not schedule_lines:
-        header.append(f"✅ 第{MAX_G1_DAY}週までのGⅠレースは全て終了しました。次のGⅠは来シーズン(1月1日)の第1週目からです。")
+
+    if not schedule_lines and current_day > MAX_G1_DAY:
+        header.append(f"✅ 第{MAX_G1_DAY}週までのGⅠレースは全て終了しました。")
     
     await ctx.reply("\n".join(header + schedule_lines))
 
