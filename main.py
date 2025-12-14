@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta, time
 
 import discord
 from discord.ext import commands, tasks
-import aiofiles
+from supabase import create_client
 
 from flask import Flask
 from threading import Thread
@@ -34,7 +34,16 @@ INTENTS = discord.Intents.default()
 INTENTS.message_content = True
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
-DATA_FILE = "racing_data.json"
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("SUPABASE_URL or SUPABASE_KEY is not set")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+DATA_KEY = "racing_data"
+
 JST = timezone(timedelta(hours=9))
 
 # 2段階認証用の待機状態を保持 (ファイルには保存しないインメモリデータ)
@@ -59,7 +68,6 @@ MIN_G1_FIELD = 10
 MAX_G1_DAY = 30 
 
 async def load_data():
-    """データをロードし、存在しない場合は初期データを作成して保存する"""
     default_data = {
         "horses": {},
         "owners": {},
@@ -69,50 +77,40 @@ async def load_data():
         "announce_channel": None,
         "pending_entries": {}
     }
-    
-    if not os.path.exists(DATA_FILE):
-        today = datetime.now(JST)
-        year = today.year
-        month = today.month
-        day_of_month = today.day 
-        
-        # 【修正箇所】シーズンを現実の日付（年・月・日）で初期化
-        default_data["season"] = {"year": year, "month": month, "day": day_of_month}
-        
-        async with aiofiles.open(DATA_FILE, "w") as f:
-            await f.write(json.dumps(default_data, ensure_ascii=False, indent=2))
+
+    today = datetime.now(JST)
+    default_data["season"] = {
+        "year": today.year,
+        "month": today.month,
+        "day": today.day
+    }
+
+    res = supabase.table("kv_store").select("value").eq("key", DATA_KEY).execute()
+
+    if not res.data:
+        supabase.table("kv_store").insert({
+            "key": DATA_KEY,
+            "value": default_data
+        }).execute()
         return default_data
 
-    async with aiofiles.open(DATA_FILE, "r") as f:
-        text = await f.read()
-        data = json.loads(text)
-        
-        if "pending_entries" not in data:
-            data["pending_entries"] = {}
-        if "announce_channel" not in data:
-             data["announce_channel"] = None
-        
-        # 過去のデータ構造をチェックし、'week'があれば'day'に移行
-        if "week" in data["season"]:
-            data["season"]["day"] = data["season"].pop("week")
-            # 月がない場合は現在の月に設定（応急処置）
-            if "month" not in data["season"]:
-                 data["season"]["month"] = datetime.now(JST).month
-        
-        # 芝・ダート適性、お気に入りのデータ移行（既存の馬にも適性/favoriteを付与）
-        for hid, horse in data["horses"].items():
-            if "turf_apt" not in horse["stats"]:
-                horse["stats"]["turf_apt"] = random.randint(50, 90)
-                horse["stats"]["dirt_apt"] = random.randint(50, 90)
-            if "favorite" not in horse:
-                 horse["favorite"] = False
-        
-        return data
+    data = res.data[0]["value"]
+
+    # 既存互換処理（元コードそのまま）
+    if "pending_entries" not in data:
+        data["pending_entries"] = {}
+    if "announce_channel" not in data:
+        data["announce_channel"] = None
+
+    return data
+
 
 async def save_data(data):
-    """データをファイルに保存する"""
-    async with aiofiles.open(DATA_FILE, "w") as f:
-        await f.write(json.dumps(data, ensure_ascii=False, indent=2))
+    supabase.table("kv_store").upsert({
+        "key": DATA_KEY,
+        "value": data
+    }).execute()
+
 
 def default_schedule():
     """レーススケジュール定義（キーは文字列。第1週〜第30週に固定のGⅠを割り当てる）"""
@@ -362,7 +360,7 @@ async def confirmreset(ctx):
         return
 
     if os.path.exists(DATA_FILE):
-        os.remove(DATA_FILE)
+        supabase.table("kv_store").delete().eq("key", DATA_KEY).execute()
     
     await ctx.reply("✅ **データファイルを削除しました。** Botを再起動すると新しい状態で始まります。")
 
@@ -731,9 +729,6 @@ async def rank(ctx, category: str = "prize"):
 
 @bot.command(name="schedule", help="本日のGⅠ情報を表示します")
 async def schedule(ctx):
-    if not os.path.exists(DATA_FILE):
-        await ctx.reply("データがまだ初期化されていません。`!newhorse` コマンドを実行してデータを初期化してください。")
-        return
         
     data = await load_data()
     current_day = data["season"]["day"]
