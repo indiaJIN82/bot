@@ -726,6 +726,37 @@ async def unentry(ctx, horse_id: str):
     
     await ctx.reply(f"✅ **{horse['name']}** の本日(第{current_day}週)のレースへの出走登録を取り消しました。")
 
+@bot.command(name="schedule", help="現在のGⅠレーススケジュールと日付を表示します")
+async def schedule(ctx):
+    data = await load_data()
+    current_day = data["season"]["day"]
+    current_month = data["season"]["month"]
+    current_year = data["season"]["year"]
+    
+    header = [
+        f"📅 **GⅠレーススケジュール** ({current_year}年{current_month}月)",
+        f"現在のシーズン日: **第{current_day}週/30週**",
+        "---"
+    ]
+    
+    # 今後のGⅠスケジュール（現在の日付以降）を表示
+    schedule_lines = []
+    
+    # 最大30日（週）分のGⅠスケジュールをチェック
+    for day in range(current_day, MAX_G1_DAY + 1):
+        day_key = str(day)
+        race_info = data["schedule"].get(day_key)
+        
+        if race_info:
+            status = "本日開催" if day == current_day else "今後開催"
+            schedule_lines.append(
+                f"**第{day}週**: {race_info['name']} ({race_info['distance']}m/{race_info['track']}) - *{status}*"
+            )
+
+    if not schedule_lines:
+        header.append(f"✅ 第{MAX_G1_DAY}週までのGⅠレースは全て終了しました。次のGⅠは来シーズン(1月1日)の第1週目からです。")
+    
+    await ctx.reply("\n".join(header + schedule_lines))
 
 @bot.command(name="entryfav", help="お気に入り馬を本日のGⅠに一括登録します")
 async def entryfav(ctx):
