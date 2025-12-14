@@ -63,7 +63,7 @@ MAX_HORSES_PER_OWNER = 5
 # 1週間に同一オーナーがエントリーできる最大頭数（ここでは日毎に適用）
 MAX_ENTRIES_PER_WEEK = 4 
 # GⅠの最低出走頭数（これに満たない場合Bot馬を補充）
-MIN_G1_FIELD = 10 
+MIN_G1_FIELD = 18 # <-- ユーザーの要望により18に変更
 # GⅠが開催される最大の日数（週数）
 MAX_G1_DAY = 30 
 
@@ -570,7 +570,7 @@ async def massretire(ctx):
     if keep_names:
         reply_msg.append(", ".join(keep_names))
     else:
-        reply_msg.append("なし")
+        reply.append("なし")
         
     await ctx.reply("\n".join(reply_msg))
 
@@ -1355,6 +1355,7 @@ async def daily_pre_announcement_task():
     
     # GⅠが開催される日（1日〜30日）のみ告知
     if race_info and current_day <= MAX_G1_DAY:
+        # 告知メッセージにも MIN_G1_FIELD の値（18）を反映
         await channel.send(
             f"🔔 **【出走締切間近のお知らせ】** 🔔\n"
             f"現在のシーズン: {current_year}年 {current_month}月 第{current_day}週\n"
