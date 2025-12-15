@@ -2,3 +2,4 @@ discord.py
 aiofiles
 flask
 supabase
+table2ascii
