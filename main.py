@@ -6,8 +6,7 @@ import asyncio
 import calendar
 import threading
 from datetime import datetime, timezone, timedelta, time 
-from flask import Flask
-from table2ascii import table2ascii as t2a, PresetStyle
+
 import discord
 from discord.ext import commands, tasks
 from supabase import create_client
@@ -87,12 +86,12 @@ MAX_TRAIN_AMOUNT = 5
 
 # 最大保有頭数 
 MAX_HORSES_PER_OWNER = 5
-# 1週間に同一オーナーがエントリーできる最大頭数（ここでは日毎に適用）
-MAX_ENTRIES_PER_WEEK = 4 
 # GⅠの最低出走頭数（これに満たない場合Bot馬を補充）
 MIN_G1_FIELD = 18 
 # GⅠが開催される最大の日数（週数）
 MAX_G1_DAY = 30 
+# 馬券のハウスマージン（控除率）
+HOUSE_MARGIN = 0.9 # 10%控除
 
 async def load_data():
     default_data = {
@@ -102,14 +101,16 @@ async def load_data():
         "schedule": default_schedule(),
         "rankings": {"prize": {}, "wins": {}, "stable": {}},
         "announce_channel": None,
-        "pending_entries": {}
+        "pending_entries": {},
+        "pending_bets": {} # ★ 追加
     }
 
     today = datetime.now(JST)
     default_data["season"] = {
         "year": today.year,
         "month": today.month,
-        "day": today.day
+        "day": today.day,
+        "last_race_day": 0 # 最終レース実行日を記録
     }
 
     # Supabaseからデータを取得
@@ -130,7 +131,11 @@ async def load_data():
         data["pending_entries"] = {}
     if "announce_channel" not in data:
         data["announce_channel"] = None
-
+    if "season" not in data:
+        data["season"] = default_data["season"]
+    if "pending_bets" not in data: # ★ 追加
+        data["pending_bets"] = {}
+        
     return data
 
 
@@ -143,12 +148,12 @@ async def save_data(data):
 
 
 def default_schedule():
-    """レーススケジュール定義（キーは文字列。第1週〜第30週に固定のGⅠを割り当てる）"""
+    """レーススケジュール定義（地方・海外GⅠを組み込み、現実のローテーションに近づける）"""
     # 30個のGⅠを、シーズンの1日から30日に対応させる
-    return { # <-- ここを正しくインデントする
+    return {
         # --------------------- 年末年始（ダート・海外） ---------------------
         "1":  {"name": "GⅠ 東京大賞典", "distance": 2000, "track": "ダート"},
-        "2":  {"name": "GⅠ 川崎記念", "distance": 2100, "track": "ダート"}, # 地方GⅠ追加
+        "2":  {"name": "GⅠ 川崎記念", "distance": 2100, "track": "ダート"}, 
         "3":  {"name": "GⅠ サウジカップ", "distance": 1800, "track": "ダート"},
         "4":  {"name": "GⅠ ドバイWC", "distance": 2000, "track": "ダート"},
         
@@ -192,105 +197,25 @@ def new_horse_id(data):
         base = "H" + str(random.randint(10000, 99999))
     return base
 
-def new_bot_horse_id(existing_ids):
-    """Bot馬のID生成（重複しないように確認）"""
-    base = "B" + str(random.randint(10000, 99999))
-    while base in existing_ids:
-        base = "B" + str(random.randint(10000, 99999))
+def new_bot_horse_id(data):
+    """Bot馬のID生成"""
+    base = "B" + str(random.randint(1000, 9999))
+    while base in data["horses"]:
+        base = "B" + str(random.randint(1000, 9999))
     return base
-
-def generate_bot_horse(existing_ids):
-    """Bot馬を生成する"""
-    horse_id = new_bot_horse_id(existing_ids)
-    
-    stats = {
-        "speed": random.randint(70, 100),
-        "stamina": random.randint(70, 100),
-        "temper": random.randint(60, 95),
-        "growth": random.randint(60, 95),
-        "turf_apt": random.randint(60, 95), 
-        "dirt_apt": random.randint(60, 95), 
-    }
-    
-    bot_names = [
-        "キョウカイノホシ", "アイビスフライト", "シルバーファントム", 
-        "レジェンドブルー", "グランドマスター", "ウィニングラン", 
-        "エンペラーゲイツ", "シャドウキング", "フューチャーワン", "カチウマ"
-    ]
-    
-    return {
-        "id": horse_id,
-        "name": random.choice(bot_names) + str(random.randint(1, 9)),
-        "owner": BOT_OWNER_ID, 
-        "stats": stats,
-        "age": random.randint(3, 5),
-        "fatigue": 0,
-        "wins": 0,
-        "history": [],
-        "favorite": False,
-        "rest_used_day": -1 
-    }
-
-
-def calc_race_score(horse, distance, track):
-    s = horse["stats"]
-    speed = s["speed"]
-    stamina = s["stamina"]
-    temper = s["temper"] # TEMPER (気性)
-    growth = s["growth"] # GROWTH (成長力/バフ)
-    turf_apt = s.get("turf_apt", 70) 
-    dirt_apt = s.get("dirt_apt", 70) 
-
-    # 距離適性
-    if distance <= 1400:
-        base = speed * 0.7 + stamina * 0.3
-    elif distance <= 2200:
-        base = speed * 0.5 + stamina * 0.5
-    else:
-        base = speed * 0.3 + stamina * 0.7
-    
-    # 馬場適性
-    if track == "ダート":
-        apt_factor = dirt_apt / 100 
-    else:
-        apt_factor = turf_apt / 100
-
-    # 根幹能力以外の補正 (GRW/TEMによる基本スコア補正)
-    if track == "ダート":
-        # TEMのダート補正を維持
-        condition_factor = 0.95 + (temper / 100) * 0.1 
-    else:
-        # 芝ではGRWの補正を維持
-        condition_factor = 1.0 + (growth / 100) * 0.15
-
-    # 疲労とコンディション計算
-    fatigue = horse.get("fatigue", 0)
-    cond = max(0.75, 1.0 - (fatigue * 0.02))
-    
-    # --- ★ TEMPER (気性) によるランダム幅の調整 ★ ---
-    # TEMが高いほど下限が上がり、下振れを防ぐ。上限は固定で大穴の可能性を維持。
-    tem_stab_factor = (temper / 100) * 0.15 
-    lower_bound = 0.85 + tem_stab_factor
-    
-    # 上限は1.15のまま維持
-    rand = random.uniform(lower_bound, 1.15)
-    # --- ★ 調整ここまで ★ ---
-
-    score = base * apt_factor * condition_factor * rand * cond
-    return score
 
 def prize_pool_for_g1(race_name):
     """GⅠレース名に基づき、賞金プールを決定する"""
     
-    # 高額賞金レース
+    # 高額賞金レース (500,000)
     if "サウジカップ" in race_name or "ドバイWC" in race_name or "ジ・エベレスト" in race_name or "有馬記念" in race_name or "ジャパン" in race_name:
-        total = 500_000 # 海外トップクラス
+        total = 500_000
         
-    # 海外主要・地方交流レース
+    # 海外主要レース (300,000)
     elif "凱旋門賞" in race_name or "キングジョージ6世" in race_name or "BCクラシック" in race_name or "チャンピオンズマイル" in race_name:
-        total = 300_000 # 日本GⅠよりやや高額
+        total = 300_000
         
-    # 日本のGⅠレース（デフォルト）
+    # 日本の中央GⅠおよびその他のレース（地方交流含む） (200,000)
     else:
         total = 200_000 
         
@@ -300,474 +225,320 @@ def prize_pool_for_g1(race_name):
     return total, payout_rate
 
 def prize_pool_for_lower():
-    """下級レースの賞金設定"""
-    total = 17000 
-    return total, [10000/17000, 5000/17000, 2000/17000] # 10000, 5000, 2000
+    """下級レースの賞金プールを決定する"""
+    total = 30_000
+    payout_rate = [0.6, 0.25, 0.1, 0.05] # 4着まで
+    return total, payout_rate
 
-def progress_growth(horse):
-    g = horse["stats"]["growth"]
-    # レース後の成長力を 2-5 に強化
-    horse["stats"]["growth"] = min(100, g + random.randint(2, 5))
-
-def generate_commentary(race_info, results, entries_count):
-    if entries_count < 2:
-        return ""
-    
-    winner = results[0]
-    second = results[1] if len(results) > 1 else None
-    
-    if winner['owner'] == BOT_OWNER_ID:
-        commentary = [
-             f"無敵の強さ！ 協会生産の**{winner['horse_name']}**が他馬を寄せ付けず圧勝！ プレイヤー勢は歯が立ちませんでした！",
-             f"ゴール板前で、Botの刺客**{winner['horse_name']}**が驚異的な末脚を炸裂！ 悔しい協会側の勝利です！",
-        ]
-    elif race_info['name'].startswith("GⅠ"):
-        commentary = [
-            f"さあ、ゴール！ 激しい叩き合いを制したのは、見事な走りを見せた**{winner['horse_name']}**だ！",
-            f"最後の直線！ **{winner['horse_name']}**が力強い末脚で一気に抜け出し、優勝の栄冠に輝きました！",
-        ]
-    else: 
-        commentary = [
-            f"最終レース、**{winner['horse_name']}**が混戦を抜け出し、見事一発逆転を決めました！",
-            f"力の違いを見せつけた**{winner['horse_name']}**が、最後の賞金を獲得しました！",
-        ]
-    
-    if second and winner['score'] - second['score'] < 5 and race_info['name'].startswith("GⅠ"):
-        commentary.append(
-            f"大接戦！ ほとんど差がありませんでしたが、僅かに**{winner['horse_name']}**の鼻がゴール板を先に通過！ {second['horse_name']}は惜しくも2着！"
-        )
-    
-    if race_info['track'] == 'ダート':
-        commentary.append(f"砂塵を巻き上げてのダート戦、**{winner['horse_name']}**が他馬を圧倒しました！")
-    elif race_info['distance'] >= 2400:
-        commentary.append(f"長距離戦を制したのは、スタミナと根性が光った**{winner['horse_name']}**！")
-
-    return random.choice(commentary)
-
-async def announce_race_results(data, race_info, results, day, month, year, channel, entries_count):
-    commentary = generate_commentary(race_info, results, entries_count) 
-    
-    # 日をそのまま週として表示
-    week_display = day
-    
-    if race_info['name'].startswith("GⅠ"):
-         title = f"🎉 レース結果速報 - {year}年 {month}月 第{week_display}週 🎉"
-         race_line = f"**【{race_info['name']}】** 距離:{race_info['distance']}m / 馬場:{race_info['track']} / **{entries_count}頭立て**"
-    else:
-         title = f"📢 下級レース結果 - {year}年 {month}月 第{week_display}週"
-         race_line = f"**【{race_info['name']}】** 距離:{race_info['distance']}m / 馬場:{race_info['track']} / **{entries_count}頭立て**"
-    
-    msg_lines = [
-        title,
-        race_line,
-        "---------------------",
-        f"🎙️ *{commentary}*", 
-        "---------------------",
-    ]
-    
-    prize_count = 5 if race_info['name'].startswith("GⅠ") else 3
-
-    for r in results:
-        owner_display = ""
-        if r['owner'] == BOT_OWNER_ID:
-            owner_display = "**協会生産**"
-        else:
-            owner_display = f"<@{r['owner']}>"
-        
-        # 馬番を表示
-        line = f"**{r['pos']}着** ({r['post_position']}番) **{r['horse_name']}** (オーナー:{owner_display})"
-        
-        if r['pos'] <= prize_count:
-             line += f" 賞金:{r['prize']} (スコア:{r['score']:.2f})"
-        
-        msg_lines.append(line)
-        
-    await channel.send("\n".join(msg_lines))
-
-# データ整合性を保つためのヘルパー関数
 def _clean_pending_entry(data, horse_id):
-    """
-    指定された馬IDを、すべてのpending_entriesリストから削除します。
-    馬を引退させる際に呼び出し、参照エラーを防ぎます。
-    """
-    cleaned = False
-    if "pending_entries" in data:
-        # pending_entriesは {day_key: [horse_id, ...]} の形式
-        for day_key in list(data["pending_entries"].keys()):
-            if horse_id in data["pending_entries"][day_key]:
-                data["pending_entries"][day_key].remove(horse_id)
-                cleaned = True
-            # エントリーリストが空になったらキー自体を削除
-            if not data["pending_entries"][day_key]:
-                del data["pending_entries"][day_key]
-    return cleaned
-
-# 一括エントリー処理のコアロジック
-async def _perform_bulk_entry(ctx, data, target_horses, entry_type):
-    uid = str(ctx.author.id)
-    current_day = data["season"]["day"]
-    current_day_str = str(current_day)
-    
-    # 1. GⅠ開催日チェック
-    if current_day > MAX_G1_DAY:
-         await ctx.reply(f"本日({current_day}日)はGⅠ開催日ではないため、エントリーできません。")
-         return
-
-    pending = data.get("pending_entries", {})
-    if current_day_str not in pending:
-        pending[current_day_str] = []
+    """pending_entriesから特定の馬IDをクリーンアップ"""
+    g1_day_key = str(data["season"]["day"])
+    if g1_day_key in data["pending_entries"]:
+        data["pending_entries"][g1_day_key]["entries"] = [
+            h for h in data["pending_entries"][g1_day_key].get("entries", []) if h != horse_id
+        ]
         
-    # 2. 処理対象となる馬のリストを作成 (疲労 < 8 の馬のみ)
-    eligible_horses = []
-    for hid in target_horses:
-        horse = data["horses"].get(hid)
-        if horse and horse["owner"] == uid:
-            # 疲労チェック
-            if horse.get("fatigue", 0) >= 8:
-                continue
-            
-            eligible_horses.append(hid)
-            
-    # 3. 上限チェック (厳格: 5頭以上当てはまる場合は拒否)
-    if len(eligible_horses) > MAX_ENTRIES_PER_WEEK:
-        horse_names = [data["horses"][hid]["name"] for hid in eligible_horses]
-        await ctx.reply(
-            f"⚠️ **一括登録失敗**: あなたの厩舎には出走可能な馬が**{len(eligible_horses)}頭**います。\n"
-            f"一括登録の上限**{MAX_ENTRIES_PER_WEEK}頭**を超過しているため、登録をキャンセルしました。\n"
-            f"**対象馬**: {', '.join(horse_names)}"
-        )
-        return
+# ------------------ 新しいオッズ計算ロジック ------------------
+
+def calculate_expected_score(horse, race_info):
+    """馬の最終的なレーススコアを計算する（乱数なし）"""
+    stats = horse["stats"]
+    
+    # 距離適性ボーナス/ペナルティ
+    dist_bonus = 0
+    distance = race_info["distance"]
+    if distance <= 1400: # 短距離
+        dist_bonus = (stats["SPD"] * 1.5) + (stats["POW"] * 1.0)
+    elif distance <= 2000: # マイル・中距離
+        dist_bonus = (stats["SPD"] * 1.0) + (stats["STAM"] * 1.0) + (stats["POW"] * 1.0)
+    else: # 長距離
+        dist_bonus = (stats["SPD"] * 0.8) + (stats["STAM"] * 1.5) + (stats["POW"] * 0.7)
         
-    # 4. 登録処理
-    registered_count = 0
-    already_entered_count = 0
+    # 馬場適性ボーナス/ペナルティ
+    track_bonus = 0
+    if race_info["track"] == "芝":
+        track_bonus = stats["SPD"] * 0.2
+    else: # ダート
+        track_bonus = stats["POW"] * 0.2
+        
+    # 疲労ペナルティ
+    fatigue_penalty = horse.get("fatigue", 0) * 10
     
-    for hid in eligible_horses:
-        if hid in pending[current_day_str]:
-            already_entered_count += 1
-            continue
+    # スコア計算
+    base_score = dist_bonus + track_bonus
+    
+    # 最終スコア = (基本スコア - 疲労ペナルティ)
+    final_score = base_score - fatigue_penalty
+    
+    return max(1, final_score) # 0以下にならないように最低1にする
+
+
+def calculate_fixed_odds(data_source, entries_list, race_info, house_margin=HOUSE_MARGIN):
+    """
+    出走馬リストとレース情報に基づき、固定オッズを計算する。
+    オッズは (1 / 確率) * (1 / ハウスマージン) で計算される。
+    """
+    total_expected_score = 0
+    horse_scores = {}
+    
+    # 全馬の期待スコアを計算
+    for hid in entries_list:
+        horse = data_source.get(hid)
+        if horse:
+            score = calculate_expected_score(horse, race_info)
+            horse_scores[hid] = score
+            total_expected_score += score
+    
+    # オッズを計算
+    fixed_odds = {}
+    for hid, score in horse_scores.items():
+        if total_expected_score > 0:
+            # 勝利確率: score / total_score
+            # 控除後オッズ: 1 / (確率 * house_margin)
             
-        # 登録実行
-        pending[current_day_str].append(hid)
-        registered_count += 1
+            odds = 1.0 / (score / total_expected_score * house_margin)
+            fixed_odds[hid] = max(1.1, odds) # オッズは最低1.1倍
+        else:
+            fixed_odds[hid] = 999.0
+            
+    return fixed_odds
+# ------------------------------------------------------------------
 
-    data["pending_entries"] = pending
-    await save_data(data)
-    
-    # 5. 結果報告
-    if registered_count == 0 and already_entered_count == 0:
-        await ctx.reply(f"ℹ️ {entry_type}に該当し、出走可能な馬（疲労8未満）はいませんでした。")
-    elif registered_count == 0 and already_entered_count > 0:
-         await ctx.reply(f"✅ {entry_type}に該当する馬は全てすでに本日のレースにエントリー済みです (**{already_entered_count}頭**)。")
-    else:
-        status_msg = f"✅ {entry_type}の馬**{registered_count}頭**を本日のレースに出走登録しました。"
-        if already_entered_count > 0:
-             status_msg += f" (うち{already_entered_count}頭は既に登録済みでした)"
-        await ctx.reply(status_msg)
+# --------------- コマンド定義 ---------------
 
-
-# ----------------- コマンド -----------------
-
-@bot.command(name="resetdata", help="[管理] データファイルを初期化します（2段階認証が必要です）")
-@commands.has_permissions(administrator=True)
-async def resetdata(ctx):
-    global PENDING_RESETS
-    
-    user_id = ctx.author.id
-    
-    if user_id in PENDING_RESETS:
-        await ctx.reply("既にリセット確認待ちです。`!confirmreset` で確定するか、しばらく待ってキャンセルしてください。")
-        return
-
-    PENDING_RESETS[user_id] = datetime.now(JST) 
-    
-    await ctx.reply(
-        "⚠️ **警告**: データファイルを初期化します。この操作は元に戻せません。\n"
-        "実行する場合は、**10秒以内**に `!confirmreset` と送信してください。"
-    )
-
-@bot.command(name="confirmreset", help="[管理] !resetdataの実行を確定します")
-@commands.has_permissions(administrator=True) 
-async def confirmreset(ctx):
-    global PENDING_RESETS
-    
-    user_id = ctx.author.id
-    
-    if user_id not in PENDING_RESETS:
-        await ctx.reply("リセット確認待ちの状態ではありません。先に `!resetdata` を実行してください。")
-        return
-
-    confirmation_time = PENDING_RESETS.pop(user_id)
-    time_elapsed = (datetime.now(JST) - confirmation_time).total_seconds()
-
-    if time_elapsed > 10:
-        await ctx.reply("リセット確認の期限（10秒）が過ぎました。再度 `!resetdata` を実行してください。")
-        return
-
-    # Supabaseのデータを削除
-    supabase.table("kv_store").delete().eq("key", DATA_KEY).execute()
-    
-    await ctx.reply("✅ **データファイルを削除しました。** Botを再起動すると新しい状態で始まります。")
+@bot.event
+async def on_ready():
+    print(f'{bot.user.name} has connected to Discord!')
+    # 定期実行タスクの開始
+    check_time.start()
+    await bot.change_presence(activity=discord.Game(name="!help | 競馬ライフ"))
 
 
-@bot.command(name="setannounce", help="[管理] レース結果を告知するチャンネルを設定します")
-@commands.has_permissions(administrator=True)
-async def setannounce(ctx, channel: discord.TextChannel):
+@bot.command(name="register", help="競走馬を登録します。!register [馬名]")
+async def register_horse(ctx, *, name: str):
     data = await load_data()
-    data["announce_channel"] = channel.id
-    await save_data(data)
-    await ctx.reply(f"告知チャンネルを {channel.mention} に設定しました。")
+    owner_id = str(ctx.author.id)
+    
+    # オーナーの馬頭数チェック
+    owner_horses = data["owners"].get(owner_id, {}).get("horses", [])
+    if len(owner_horses) >= MAX_HORSES_PER_OWNER:
+        return await ctx.reply(f"馬の最大保有頭数（{MAX_HORSES_PER_OWNER}頭）に達しています。")
 
-@bot.command(name="newhorse", help="新馬抽選：あなたの厩舎に新しい馬を追加します")
-async def newhorse(ctx, name: str):
-    data = await load_data()
-    uid = str(ctx.author.id)
+    # 馬名重複チェック
+    if any(h.get("name") == name for h in data["horses"].values()):
+        return await ctx.reply("その馬名は既に登録されています。別の名前を付けてください。")
 
-    if uid not in data["owners"]:
-        data["owners"][uid] = {"horses": [], "balance": 0, "wins": 0}
-
-    if len(data["owners"][uid]["horses"]) >= MAX_HORSES_PER_OWNER:
-        await ctx.reply(f"最大保有頭数**{MAX_HORSES_PER_OWNER}頭**を超えています。`!retire <ID>` または `!massretire` で馬を引退させてください。")
-        return
+    # 初期ステータス生成
+    initial_stats = {
+        "SPD": random.randint(30, 60),
+        "STAM": random.randint(30, 60),
+        "POW": random.randint(30, 60),
+        "GRW": 20, # 初期成長力
+        "fatigue": 0,
+        "age": 2 # 初期年齢
+    }
 
     horse_id = new_horse_id(data)
-    stats = {
-        "speed": random.randint(50, 95),
-        "stamina": random.randint(50, 95),
-        "temper": random.randint(40, 90),
-        "growth": random.randint(40, 85),
-        "turf_apt": random.randint(50, 90), 
-        "dirt_apt": random.randint(50, 90), 
-    }
-    horse = {
+    
+    data["horses"][horse_id] = {
         "id": horse_id,
         "name": name,
-        "owner": uid,
-        "stats": stats,
-        "age": 3,
-        "fatigue": 0,
-        "wins": 0,
+        "owner": owner_id,
+        "stats": initial_stats,
+        "money": 0,
         "history": [],
-        "favorite": False,
-        "rest_used_day": -1 
+        "age": 2
     }
 
-    data["horses"][horse_id] = horse
-    data["owners"][uid]["horses"].append(horse_id)
+    # オーナー情報を更新 (balanceを追加)
+    if owner_id not in data["owners"]:
+        data["owners"][owner_id] = {"horses": [], "name": ctx.author.display_name, "balance": 100000} # ★ 初期残高 100,000円
+    
+    data["owners"][owner_id]["horses"].append(horse_id)
+    data["owners"][owner_id]["name"] = ctx.author.display_name
+
     await save_data(data)
-    
-    s = stats
-    await ctx.reply(
-        f"新馬抽選完了！\nID: {horse_id} / 名前: {name}\n"
-        f"ステータス: SPD {s['speed']} / STA {s['stamina']} / TEM {s['temper']} / GRW {s['growth']}\n"
-        f"適性: 芝 {s['turf_apt']} / ダート {s['dirt_apt']}\n"
-        f"お気に入り登録: {horse['favorite']}"
-    )
+    await ctx.reply(f"🐴 **{name}** が競走馬として登録されました！\n"
+                    f"初期ステータス: SPD:{initial_stats['SPD']}, STAM:{initial_stats['STAM']}, POW:{initial_stats['POW']}\n"
+                    f"オーナー残高: ¥{data['owners'][owner_id]['balance']:,}\n"
+                    f"レースに出走したり、`!train`で成長させましょう。")
 
-@bot.command(name="retire", help="馬を引退させて厩舎から削除します: 例) !retire H12345")
-async def retire(ctx, horse_id: str):
+
+@bot.command(name="list", help="あなたの所有馬一覧を表示します")
+async def list_horses(ctx):
     data = await load_data()
-    uid = str(ctx.author.id)
-    horse = data["horses"].get(horse_id)
+    owner_id = str(ctx.author.id)
+    
+    owner_horses_ids = data["owners"].get(owner_id, {}).get("horses", [])
+    balance = data["owners"].get(owner_id, {}).get("balance", 0)
 
-    if not horse:
-        await ctx.reply("そのIDの馬は存在しません。")
-        return
-    if horse["owner"] != uid:
-        await ctx.reply("これはあなたの馬ではありません。")
-        return
-    
-    # pending_entriesから馬IDを削除
-    _clean_pending_entry(data, horse_id) 
-    
-    data["owners"][uid]["horses"].remove(horse_id)
-    del data["horses"][horse_id]
-    
-    await save_data(data)
-    await ctx.reply(f"馬 **{horse['name']} (ID: {horse_id})** を引退させ、厩舎から削除しました。")
+    if not owner_horses_ids:
+        return await ctx.reply("所有馬がいません。`!register [馬名]`で登録しましょう。")
 
-
-@bot.command(name="massretire", help="お気に入り以外の馬を全て引退させます (🚨要確認)")
-async def massretire(ctx):
-    data = await load_data()
-    uid = str(ctx.author.id)
-    owner = data["owners"].get(uid)
+    response = [f"**{ctx.author.display_name}厩舎の所有馬（{len(owner_horses_ids)}頭）**",
+                f"💰 **残高**: ¥{balance:,}"]
     
-    if not owner or not owner["horses"]:
-        await ctx.reply("あなたの厩舎には馬がいません。")
-        return
-
-    to_retire = []
-    to_keep = []
-    
-    # お気に入りでない馬を選別
-    for hid in owner["horses"]:
+    for hid in owner_horses_ids:
         horse = data["horses"].get(hid)
-        if horse and not horse.get("favorite", False):
-            to_retire.append(hid)
-        elif horse:
-            to_keep.append(hid)
+        if horse:
+            stats = horse["stats"]
+            money = horse["money"]
+            wins = sum(1 for history in horse.get("history", []) if history["rank"] == 1)
+            
+            response.append(
+                f"**{horse['name']} (ID: {hid})** - {horse['age']}歳 | {wins}勝 | 疲労:{stats['fatigue']}\n"
+                f"  獲得賞金: ¥{money:,} | GRW: {stats['GRW']}\n"
+                f"  SPD:{stats['SPD']} STAM:{stats['STAM']} POW:{stats['POW']}"
+            )
+    
+    await ctx.reply("\n".join(response))
 
-    if not to_retire:
-        await ctx.reply("お気に入り登録されている馬しかいません。削除対象の馬がいません。")
-        return
-        
-    # 削除実行
-    for hid in to_retire:
-        # pending_entriesから馬IDを削除
-        _clean_pending_entry(data, hid) 
-        if hid in data["horses"]:
-             del data["horses"][hid]
-    
-    # オーナーの馬リストを更新
-    data["owners"][uid]["horses"] = to_keep
-    
-    await save_data(data)
-    
-    keep_names = [data["horses"][hid]["name"] for hid in to_keep]
-    
-    reply_msg = [
-        f"✅ **{len(to_retire)}頭**の馬を引退させました。",
-        "---",
-        f"現在厩舎に残っている馬 (**{len(to_keep)}頭**) (お気に入り):"
-    ]
-    if keep_names:
-        reply_msg.append(", ".join(keep_names))
-    else:
-        reply_msg.append("なし")
-        
-    await ctx.reply("\n".join(reply_msg))
 
-@bot.command(name="favorite", help="馬をお気に入りに登録します (全削除除外対象): 例) !favorite H12345")
-async def favorite(ctx, horse_id: str):
+@bot.command(name="train", help="GRWを消費してステータスを強化します。!train [馬ID] [ステータス] [量]")
+async def train(ctx, horse_id: str, stat_name: str, amount: int):
     data = await load_data()
-    uid = str(ctx.author.id)
+    owner_id = str(ctx.author.id)
+    
     horse = data["horses"].get(horse_id)
     
-    if not horse or horse["owner"] != uid:
-        await ctx.reply("そのIDの馬は存在しないか、あなたの馬ではありません。")
-        return
+    if not horse or horse["owner"] != owner_id:
+        return await ctx.reply("その馬IDの馬は存在しないか、あなたが所有していません。")
+        
+    stat_name = stat_name.upper()
     
-    horse["favorite"] = True
+    if stat_name not in ["SPD", "STAM", "POW"]:
+        return await ctx.reply("ステータス名は 'SPD', 'STAM', 'POW' のいずれかを指定してください。")
+        
+    if not 1 <= amount <= MAX_TRAIN_AMOUNT:
+        return await ctx.reply(f"強化量は1から{MAX_TRAIN_AMOUNT}の間で指定してください。")
+        
+    grw_cost = amount
+    
+    if horse["stats"]["GRW"] < grw_cost:
+        return await ctx.reply(f"GRW（成長力）が不足しています。現在のGRW: {horse['stats']['GRW']}。")
+        
+    # 強化処理
+    horse["stats"]["GRW"] -= grw_cost
+    horse["stats"][stat_name] += amount * GRW_CONVERSION_RATE
+    horse["stats"]["fatigue"] += 1 # 疲労増加
+    
     await save_data(data)
-    await ctx.reply(f"**{horse['name']}** をお気に入りに登録しました。`!massretire` の対象から除外されます。")
+    await ctx.reply(f"🐎 **{horse['name']}** の {stat_name} を +{amount} 強化しました。\n"
+                    f"  現在のステータス: {stat_name}:{horse['stats'][stat_name]} | GRW:{horse['stats']['GRW']} | 疲労:{horse['stats']['fatigue']}")
 
-@bot.command(name="unfavorite", help="馬のお気に入り登録を解除します: 例) !unfavorite H12345")
-async def unfavorite(ctx, horse_id: str):
+
+@bot.command(name="rest", help="馬を休ませて疲労を回復させます。!rest [馬ID] [量 (最大5)]")
+async def rest_horse(ctx, horse_id: str, amount: int):
     data = await load_data()
-    uid = str(ctx.author.id)
+    owner_id = str(ctx.author.id)
+    
     horse = data["horses"].get(horse_id)
     
-    if not horse or horse["owner"] != uid:
-        await ctx.reply("そのIDの馬は存在しないか、あなたの馬ではありません。")
-        return
-    
-    horse["favorite"] = False
-    await save_data(data)
-    await ctx.reply(f"**{horse['name']}** のお気に入り登録を解除しました。`!massretire` の対象となります。")
-
-
-@bot.command(name="myhorses", help="自分の馬一覧を表示します")
-async def myhorses(ctx):
-    data = await load_data()
-    uid = str(ctx.author.id)
-    owner = data["owners"].get(uid)
-    if not owner or not owner["horses"]:
-        await ctx.reply("あなたの厩舎には馬がいません。`!newhorse <名前>` で新馬抽選しましょう。")
-        return
-
-    lines = ["あなたの馬一覧:"]
-    for hid in owner["horses"]:
-        h = data["horses"][hid]
-        s = h["stats"]
-        fav_icon = "⭐" if h.get("favorite", False) else " "
+    if not horse or horse["owner"] != owner_id:
+        return await ctx.reply("その馬IDの馬は存在しないか、あなたが所有していません。")
         
-        # レース出走回数を計算
-        race_count = len(h.get("history", []))
+    if not 1 <= amount <= 5:
+        return await ctx.reply("回復量は1から5の間で指定してください。")
 
-        lines.append(
-            f"{fav_icon} - {h['name']} (ID: {hid}) / 年齢:{h['age']} / **レース数:{race_count}** / 勝利:{h['wins']} / 疲労:{h['fatigue']} / "
-            f"SPD:{s['speed']} STA:{s['stamina']} TEM:{s['temper']} GRW:{s['growth']} / "
-            f"芝:{s.get('turf_apt', 'N/A')} ダ:{s.get('dirt_apt', 'N/A')}" 
-        )
-    await ctx.reply("\n".join(lines))
+    # 疲労回復処理
+    current_fatigue = horse["stats"].get("fatigue", 0)
+    new_fatigue = max(0, current_fatigue - amount)
+    
+    recovery_amount = current_fatigue - new_fatigue
+    
+    if recovery_amount == 0:
+        return await ctx.reply(f"**{horse['name']}** は疲労がありません（現在の疲労: 0）。")
 
-@bot.command(name="entry", help="本日のGⅠに出走登録します: 例) !entry H12345")
-async def entry(ctx, horse_id: str):
+    horse["stats"]["fatigue"] = new_fatigue
+    
+    await save_data(data)
+    await ctx.reply(f"🛌 **{horse['name']}** を {recovery_amount} 回復させました。\n"
+                    f"  現在の疲労: {horse['stats']['fatigue']}")
+
+
+@bot.command(name="g1", help="今日のGⅠレース情報を表示します")
+async def g1_info(ctx):
     data = await load_data()
-    uid = str(ctx.author.id)
+    day_key = str(data["season"]["day"])
+    race_info = data["schedule"].get(day_key)
+    
+    if not race_info:
+        return await ctx.reply(f"本日（第{day_key}週）はGⅠレースの開催予定はありません。（下級レースが開催されます）")
+
+    total_prize, _ = prize_pool_for_g1(race_info['name'])
+    
+    entries_count = len(data["pending_entries"].get(day_key, {}).get("entries", []))
+    
+    response = (f"🏆 **本日開催 GⅠレース情報**\n"
+                f"  **レース名**: {race_info['name']}\n"
+                f"  **距離/馬場**: {race_info['distance']}m / {race_info['track']}\n"
+                f"  **賞金総額**: ¥{total_prize:,}（1着: ¥{int(total_prize * 0.55):,}）\n"
+                f"  **現在登録頭数**: {entries_count}頭\n"
+                f"  `!entry [馬ID]` で出走登録できます。 | `!bet [馬ID] [金額]` で馬券を購入できます。")
+    
+    await ctx.reply(response)
+
+
+@bot.command(name="entry", help="今日のGⅠレースに出走登録します。!entry [馬ID]")
+async def entry_g1(ctx, horse_id: str):
+    data = await load_data()
+    owner_id = str(ctx.author.id)
+    day_key = str(data["season"]["day"])
+    race_info = data["schedule"].get(day_key)
+    
+    if not race_info:
+        return await ctx.reply("本日GⅠレースは開催されません。`!g1`で確認してください。")
+        
     horse = data["horses"].get(horse_id)
-    if not horse:
-        await ctx.reply("そのIDの馬は存在しません。")
-        return
-    if horse["owner"] != uid:
-        await ctx.reply("これはあなたの馬ではありません。")
-        return
-    if horse.get("fatigue", 0) >= 8:
-        await ctx.reply("この馬は疲労が高すぎます。今週は休ませましょう。")
-        return
-
-    current_day = data["season"]["day"]
+    if not horse or horse["owner"] != owner_id:
+        return await ctx.reply("その馬IDの馬は存在しないか、あなたが所有していません。")
+        
+    entries_key = day_key
     
-    if current_day > MAX_G1_DAY:
-         await ctx.reply(f"本日({current_day}日)はGⅠ開催日ではないため、エントリーできません。")
-         return
-         
-    pending = data.get("pending_entries", {})
-    day_key = str(current_day)
+    # 登録リスト初期化
+    if entries_key not in data["pending_entries"]:
+        data["pending_entries"][entries_key] = {"race": race_info, "entries": []}
     
-    if day_key not in pending:
-        pending[day_key] = []
+    # 既に登録済みかチェック
+    if horse_id in data["pending_entries"][entries_key]["entries"]:
+        return await ctx.reply(f"**{horse['name']}** は既に **{race_info['name']}** に登録されています。")
+
+    # 疲労チェック
+    if horse["stats"].get("fatigue", 0) > 4:
+        return await ctx.reply(f"**{horse['name']}** は疲労度が高すぎます（疲労:{horse['stats']['fatigue']}）。GⅠレースへの登録は疲労5以上ではできません。`!rest`で回復させてください。")
+
+    # 登録処理
+    data["pending_entries"][entries_key]["entries"].append(horse_id)
     
-    if horse_id in pending[day_key]:
-        await ctx.reply("すでに本日のレースにエントリー済みです。")
-        return
-
-    owner_entries = [hid for hid in pending[day_key] if data['horses'].get(hid) and data['horses'][hid]['owner'] == uid]
-    if len(owner_entries) >= MAX_ENTRIES_PER_WEEK:
-         await ctx.reply(f"本日のエントリーは**{MAX_ENTRIES_PER_WEEK}頭**が上限です。すでに{len(owner_entries)}頭がエントリー済みです。")
-         return
-
-
-    pending[day_key].append(horse_id)
-    data["pending_entries"] = pending
     await save_data(data)
+    await ctx.reply(f"✅ **{horse['name']}** が **{race_info['name']}** に出走登録されました！\n"
+                    f"オッズを確認して `!bet [馬ID] [金額]` で馬券を購入しましょう。")
 
-    await ctx.reply(f"出走登録完了！ 本日(第{current_day}週)のGⅠに **{horse['name']}** をエントリーしました。")
-    
-# 【既存】出走登録取り消しコマンド
-@bot.command(name="unentry", help="本日のレースへの出走登録を取り消します: 例) !unentry H12345")
-async def unentry(ctx, horse_id: str):
+
+@bot.command(name="unentry", help="今日のGⅠレースの出走登録を取り消します。!unentry [馬ID]")
+async def unentry_g1(ctx, horse_id: str):
     data = await load_data()
-    uid = str(ctx.author.id)
+    owner_id = str(ctx.author.id)
+    day_key = str(data["season"]["day"])
+    race_info = data["schedule"].get(day_key)
+    
+    if not race_info:
+        return await ctx.reply("本日GⅠレースは開催されません。")
+        
     horse = data["horses"].get(horse_id)
-    current_day = data["season"]["day"]
-    day_key = str(current_day)
-
-    if not horse:
-        await ctx.reply("そのIDの馬は存在しません。")
-        return
-    if horse["owner"] != uid:
-        await ctx.reply("これはあなたの馬ではありません。")
-        return
+    if not horse or horse["owner"] != owner_id:
+        return await ctx.reply("その馬IDの馬は存在しないか、あなたが所有していません。")
         
-    pending = data.get("pending_entries", {})
+    entries_key = day_key
     
-    if day_key not in pending or horse_id not in pending[day_key]:
-        await ctx.reply(f"**{horse['name']}** は本日(第{current_day}週)のレースにエントリーされていません。")
-        return
-        
-    # エントリーを取り消し
-    pending[day_key].remove(horse_id)
-    
-    # エントリーリストが空になったらキー自体を削除
-    if not pending[day_key]:
-         del pending[day_key]
+    # 登録リストから削除
+    if entries_key in data["pending_entries"] and horse_id in data["pending_entries"][entries_key].get("entries", []):
+        data["pending_entries"][entries_key]["entries"].remove(horse_id)
+        await save_data(data)
+        return await ctx.reply(f"❌ **{horse['name']}** の **{race_info['name']}** への出走登録を取り消しました。")
 
-    data["pending_entries"] = pending
-    await save_data(data)
-    
-    await ctx.reply(f"✅ **{horse['name']}** の本日(第{current_day}週)のレースへの出走登録を取り消しました。")
+    return await ctx.reply(f"**{horse['name']}** は今日の **{race_info['name']}** に登録されていません。")
+
 
 @bot.command(name="schedule", help="本日と翌日のGⅠレーススケジュールを表示します")
 async def schedule(ctx):
@@ -798,8 +569,9 @@ async def schedule(ctx):
         
         if race_info:
             status = "本日開催" if day == current_day else "明日開催予定"
+            total_prize, _ = prize_pool_for_g1(race_info['name'])
             schedule_lines.append(
-                f"**第{day}週**: {race_info['name']} ({race_info['distance']}m/{race_info['track']}) - **{status}**"
+                f"**第{day}週**: {race_info['name']} ({race_info['distance']}m/{race_info['track']}) - **{status}** (賞金総額: ¥{total_prize:,})"
             )
         elif day == current_day:
             schedule_lines.append(f"**第{day}週 (本日)**: GⅠ開催はありません。（定刻に下級レースを実行します）")
@@ -812,479 +584,569 @@ async def schedule(ctx):
     
     await ctx.reply("\n".join(header + schedule_lines))
 
-@bot.command(name="entryfav", help="お気に入り馬を本日のGⅠに一括登録します")
-async def entryfav(ctx):
+
+@bot.command(name="entries", help="今日のGⅠレースの出馬表を表示します")
+async def show_entries(ctx):
     data = await load_data()
-    uid = str(ctx.author.id)
-    owner_horses = data["owners"].get(uid, {}).get("horses", [])
-    
-    # お気に入り馬のみを抽出
-    favorite_horses = [
-        hid for hid in owner_horses 
-        if data["horses"].get(hid) and data["horses"][hid].get("favorite", False)
-    ]
-    
-    await _perform_bulk_entry(ctx, data, favorite_horses, "お気に入り")
+    day_key = str(data["season"]["day"])
+    race_info = data["schedule"].get(day_key)
 
-@bot.command(name="entryall", help="全頭を本日のGⅠに一括登録します（疲労8未満）")
-async def entryall(ctx):
-    data = await load_data()
-    uid = str(ctx.author.id)
-    all_horses = data["owners"].get(uid, {}).get("horses", [])
-    
-    await _perform_bulk_entry(ctx, data, all_horses, "全頭")
-
-@bot.command(name="entries", help="本日のGⅠレースの出馬表を表示します")
-async def entries(ctx):
-    data = await load_data()
-    current_day = data["season"]["day"]
-    current_month = data["season"]["month"]
-    current_year = data["season"]["year"]
-    current_day_str = str(current_day)
-
-    if current_day > MAX_G1_DAY:
-        await ctx.reply(
-            f"{current_year}年{current_month}月 第{current_day}日（第{current_day}週）はGⅠ開催日ではありません。"
-        )
-        return
-
-    race_info = data["schedule"].get(current_day_str)
     if not race_info:
-        await ctx.reply(
-            f"本日({current_day}日)はGⅠはありません。（スケジュールに定義されていません）"
-        )
-        return
-
-    entries_list = data.get("pending_entries", {}).get(current_day_str, [])
+        return await ctx.reply("本日GⅠレースは開催されません。")
+        
+    entries_list = data["pending_entries"].get(day_key, {}).get("entries", [])
+    
     if not entries_list:
-        await ctx.reply(
-            f"本日のGⅠ「**{race_info['name']}**」にエントリーされている馬はいません。"
-        )
-        return
-
-    entries_data = []
-    post_position = 1
-
+        return await ctx.reply(f"現在、**{race_info['name']}** に登録されている馬はいません。")
+    
+    # 出走馬データの準備
+    field = []
     for hid in entries_list:
         horse = data["horses"].get(hid)
-        if not horse or horse["owner"] == BOT_OWNER_ID:
-            continue
+        if horse:
+            stats = horse["stats"]
+            wins = sum(1 for h in horse.get("history", []) if h["rank"] == 1)
+            field.append({
+                "name": horse["name"],
+                "owner_name": data["owners"].get(horse["owner"], {}).get("name", "Unknown Owner"),
+                "age": horse["age"],
+                "wins": wins,
+                "spd": stats["SPD"],
+                "stam": stats["STAM"],
+                "pow": stats["POW"],
+                "fatigue": stats["fatigue"]
+            })
 
-        try:
-            user = bot.get_user(int(horse["owner"])) or await bot.fetch_user(int(horse["owner"]))
-            owner_name = user.display_name
-        except:
-            owner_name = "不明"
+    # スコアに基づきソート (ここでは単純に総合力+ランダムでソート)
+    random.shuffle(field)
 
-        entries_data.append([
-            post_position,
-            hid,
+    # Markdownテーブルの作成
+    table_data = []
+    
+    # ヘッダー
+    table_data.append(["馬名", "オーナー", "齢", "勝", "SPD", "STAM", "POW", "疲労"])
+
+    for i, horse in enumerate(field):
+        table_data.append([
             cut_horse_name(horse["name"]),
-            owner_name,
-            horse.get("fatigue", 0),
-            horse.get("wins", 0),
+            cut_horse_name(horse["owner_name"]),
+            str(horse["age"]),
+            str(horse["wins"]),
+            str(horse["spd"]),
+            str(horse["stam"]),
+            str(horse["pow"]),
+            str(horse["fatigue"])
         ])
-        post_position += 1
 
-    if not entries_data:
-        await ctx.reply("本日のGⅠにエントリーされているプレイヤー馬はいません。")
-        return
-
-    ascii_table = t2a(
-        header=["馬番", "ID", "馬名", "オーナー", "疲労", "勝利"],
-        body=entries_data,
+    # テーブル表示
+    table_string = t2a(
+        header=table_data[0],
+        body=table_data[1:],
         style=PresetStyle.thin_compact
     )
 
+    response = (f"📋 **{race_info['name']}** 出馬表 ({race_info['distance']}m/{race_info['track']})\n"
+                f"現在登録頭数: {len(field)}頭\n"
+                f"```\n{table_string}\n```")
+    
+    await ctx.reply(response)
+
+
+@bot.command(name="bet", help="本日のGⅠの単勝（1着）に賭けます: 例) !bet H12345 100")
+async def bet(ctx, horse_id: str, amount: int):
+    data = await load_data()
+    uid = str(ctx.author.id)
+    horse = data["horses"].get(horse_id)
+    current_day_str = str(data["season"]["day"])
+
+    # 1. GⅠ開催日チェック
+    race_info = data["schedule"].get(current_day_str)
+    if not race_info:
+        await ctx.reply(f"本日(第{data['season']['day']}週)はGⅠ開催日ではないため、馬券は購入できません。")
+        return
+    
+    # 2. 馬の存在とエントリーチェック 
+    if not horse or horse["owner"] == BOT_OWNER_ID:
+        await ctx.reply("そのIDの馬は存在しないか、Bot馬には賭けられません。")
+        return
+    
+    entries_list = data.get("pending_entries", {}).get(current_day_str, {}).get("entries", [])
+    if horse_id not in entries_list:
+        await ctx.reply(f"**{horse['name']}** は本日のGⅠ「{race_info['name']}」にエントリーされていません。")
+        return
+        
+    # 3. オッズ計算用のフィールドを準備
+    
+    full_field_for_odds = []
+    player_horses_for_odds = []
+    for hid in entries_list:
+        h = data["horses"].get(hid)
+        if h and h["owner"] != BOT_OWNER_ID:
+            player_horses_for_odds.append(h)
+            full_field_for_odds.append(hid)
+            
+    # オッズ計算用の仮Bot馬を生成 (DBには保存しない)
+    temp_bot_horses = {}
+    num_bot_horses_needed = max(0, MIN_G1_FIELD - len(player_horses_for_odds))
+    min_s, max_s = (70, 110) # GⅠ設定
+    for i in range(num_bot_horses_needed):
+        bot_hid = f"TEMP_B_{i}" 
+        temp_bot_horses[bot_hid] = {
+            "stats": {
+                "SPD": random.randint(min_s, max_s),
+                "STAM": random.randint(min_s, max_s),
+                "POW": random.randint(min_s, max_s),
+                "fatigue": 0
+            },
+            "fatigue": 0
+        }
+        full_field_for_odds.append(bot_hid)
+        
+    # オッズ計算用のデータ辞書を準備
+    odds_data_source = data["horses"].copy()
+    odds_data_source.update(temp_bot_horses)
+    
+    # 4. オッズ計算
+    fixed_odds_map = calculate_fixed_odds(odds_data_source, full_field_for_odds, race_info)
+    current_odds = fixed_odds_map.get(horse_id)
+
+    if current_odds is None:
+        await ctx.reply("オッズ計算中にエラーが発生しました（馬がエントリーリストに見つかりません）。")
+        return
+
+    # 5. 金額チェック
+    if amount <= 0:
+        await ctx.reply("賭け金は正の値を指定してください。")
+        return
+    
+    # 6. オーナーの残高チェックと馬券の購入
+    # オーナー情報が存在しない場合も初期化
+    if uid not in data["owners"]:
+        data["owners"][uid] = {"horses": [], "name": ctx.author.display_name, "balance": 0} 
+    
+    owner = data["owners"][uid]
+    
+    if owner.get("balance", 0) < amount:
+        await ctx.reply(f"残高が不足しています。現在の残高: {owner.get('balance', 0):,}円。")
+        return
+    
+    # 資金の引き落とし
+    data["owners"][uid]["balance"] -= amount
+
+    # 賭けの登録 (オッズを記録)
+    bets = data.get("pending_bets", {})
+    if current_day_str not in bets:
+        bets[current_day_str] = {}
+        
+    if horse_id not in bets[current_day_str]:
+        bets[current_day_str][horse_id] = []
+
+    bets[current_day_str][horse_id].append({
+        "user_id": uid, 
+        "amount": amount,
+        "odds": current_odds # ★ 確定オッズを記録
+    })
+    data["pending_bets"] = bets
+    
+    await save_data(data)
+    await ctx.reply(f"✅ **{horse['name']}** の単勝に **{amount:,}円** 賭けました。\n"
+                    f"  **確定オッズ**: {current_odds:.1f}倍\n"
+                    f"  残高: {data['owners'][uid]['balance']:,}円")
+
+
+@bot.command(name="odds", help="本日のGⅠレースの現在の想定固定単勝オッズを表示します")
+async def odds(ctx):
+    data = await load_data()
+    current_day_str = str(data["season"]["day"])
+    
+    race_info = data["schedule"].get(current_day_str)
+    if not race_info:
+        return await ctx.reply(f"本日(第{data['season']['day']}週)はGⅠ開催日ではないため、オッズはありません。")
+        
+    entries_list = data.get("pending_entries", {}).get(current_day_str, {}).get("entries", [])
+
+    if not entries_list:
+        return await ctx.reply(f"GⅠ「**{race_info['name']}**」にはまだエントリー馬がいません。")
+
+    # オッズ計算用のフィールドを準備 (Bot馬の仮生成は !bet のロジックと同じ)
+    full_field_for_odds = []
+    player_horses_for_odds = []
+    for hid in entries_list:
+        h = data["horses"].get(hid)
+        if h and h["owner"] != BOT_OWNER_ID:
+            player_horses_for_odds.append(h)
+            full_field_for_odds.append(hid)
+            
+    # オッズ計算用の仮Bot馬を生成 (DBには保存しない)
+    temp_bot_horses = {}
+    num_bot_horses_needed = max(0, MIN_G1_FIELD - len(player_horses_for_odds))
+    min_s, max_s = (70, 110) # GⅠ設定
+    for i in range(num_bot_horses_needed):
+        bot_hid = f"TEMP_B_{i}" 
+        temp_bot_horses[bot_hid] = {
+            "stats": {
+                "SPD": random.randint(min_s, max_s),
+                "STAM": random.randint(min_s, max_s),
+                "POW": random.randint(min_s, max_s),
+                "fatigue": 0
+            },
+            "fatigue": 0
+        }
+        full_field_for_odds.append(bot_hid)
+        
+    # オッズ計算用のデータ辞書を準備
+    odds_data_source = data["horses"].copy()
+    odds_data_source.update(temp_bot_horses)
+    
+    # 3. オッズ計算
+    fixed_odds_map = calculate_fixed_odds(odds_data_source, full_field_for_odds, race_info)
+
+    # 4. 表示用のデータ整形
+    odds_data = []
+    for hid in entries_list:
+        horse = data["horses"].get(hid)
+        if horse and horse["owner"] != BOT_OWNER_ID:
+            odds_display = f"{fixed_odds_map.get(hid, 999.0):.1f}"
+            odds_data.append([
+                cut_horse_name(horse["name"]),
+                odds_display
+            ])
+
+    # オッズの低い順（人気順）にソート
+    odds_data.sort(key=lambda x: float(x[1]))
+    
+    # テーブル表示
+    ascii_table = t2a(
+        header=["馬名", "オッズ"],
+        body=odds_data,
+        style=PresetStyle.thin_compact
+    )
+    
     header_text = (
-        f"🏆 **{current_year}年{current_month}月 第{current_day}週 GⅠ出馬表**\n"
-        f"{race_info['name']} / {race_info['distance']}m / {race_info['track']}\n"
+        f"📊 **GⅠ「{race_info['name']}」想定固定単勝オッズ**\n"
+        "オッズは馬の能力に基づき、随時更新されます。購入時のオッズが適用されます。\n"
+        "---"
     )
 
     await ctx.reply(header_text + "```" + ascii_table + "```")
 
-@bot.command(name="rest", help="馬を休養させて疲労を回復します（1日1回）: 例) !rest H12345")
-async def rest(ctx, horse_id: str):
-    data = await load_data()
-    uid = str(ctx.author.id)
-    horse = data["horses"].get(horse_id)
-    current_day = data["season"]["day"]
-    
-    if not horse:
-        await ctx.reply("そのIDの馬は存在しません。")
-        return
-    if horse["owner"] != uid:
-        await ctx.reply("これはあなたの馬ではありません。")
-        return
-    
-    # ----------------- 1日1回制限チェック -----------------
-    if horse.get("rest_used_day") == current_day:
-        await ctx.reply(f"**{horse['name']}** は本日(第{current_day}週)既に休養しています。1日に1回までしか休養できません。")
-        return
-    # ---------------------------------------------------
+# ------------------ レース実行ロジック ------------------
 
-    old = horse.get("fatigue", 0)
-    horse["fatigue"] = max(0, old - 3)
-    horse["rest_used_day"] = current_day 
-    await save_data(data)
-    await ctx.reply(f"**{horse['name']}** を休養させました。疲労 {old} → {horse['fatigue']}")
-
-@bot.command(name="train", help="GRWを消費してステータスを恒久的に強化します: 例) !train H12345 speed 3")
-async def train(ctx, horse_id: str, stat_name: str, amount: int):
-    data = await load_data()
-    uid = str(ctx.author.id)
-    horse = data["horses"].get(horse_id)
+def calculate_score(horse, race_info):
+    """馬の最終的なレーススコアを計算する（単純化したロジック）"""
+    stats = horse["stats"]
     
-    # 1. 馬の存在とオーナー権限のチェック
-    if not horse or horse["owner"] != uid:
-        await ctx.reply("そのIDの馬は存在しないか、あなたの馬ではありません。")
-        return
+    # 距離適性ボーナス/ペナルティ
+    dist_bonus = 0
+    distance = race_info["distance"]
+    if distance <= 1400: # 短距離
+        dist_bonus = (stats["SPD"] * 1.5) + (stats["POW"] * 1.0)
+    elif distance <= 2000: # マイル・中距離
+        dist_bonus = (stats["SPD"] * 1.0) + (stats["STAM"] * 1.0) + (stats["POW"] * 1.0)
+    else: # 長距離
+        dist_bonus = (stats["SPD"] * 0.8) + (stats["STAM"] * 1.5) + (stats["POW"] * 0.7)
+        
+    # 馬場適性ボーナス/ペナルティ
+    track_bonus = 0
+    if race_info["track"] == "芝":
+        track_bonus = stats["SPD"] * 0.2
+    else: # ダート
+        track_bonus = stats["POW"] * 0.2
+        
+    # 疲労ペナルティ
+    fatigue_penalty = stats.get("fatigue", 0) * 10
+    
+    # スコア計算
+    base_score = dist_bonus + track_bonus
+    
+    # 乱数による変動（レースの不確実性）
+    random_factor = random.uniform(0.9, 1.1) 
+    
+    # 最終スコア = (基本スコア - 疲労ペナルティ) * ランダム係数
+    final_score = (base_score - fatigue_penalty) * random_factor
+    
+    return max(0, final_score)
 
-    # 2. ステータス名のチェックと変換
-    stat_name = stat_name.lower()
-    allowed_stats_map = {
-        "speed": "speed", "spd": "speed",
-        "stamina": "stamina", "sta": "stamina",
-        "temper": "temper", "tem": "temper",
-        "turf": "turf_apt", "芝": "turf_apt",
-        "dirt": "dirt_apt", "ダート": "dirt_apt"
+
+def generate_bot_horse(data, race_info, min_stats=50, max_stats=100):
+    """Bot馬を生成する"""
+    horse_id = new_bot_horse_id(data)
+    name = f"ライバル{random.randint(100, 999)}"
+    
+    # 距離に応じてステータスを調整
+    distance = race_info["distance"]
+    
+    spd = random.randint(min_stats, max_stats)
+    stam = random.randint(min_stats, max_stats)
+    pow_ = random.randint(min_stats, max_stats)
+    
+    # レース適性に合わせて少しブースト
+    if distance <= 1400: # 短距離
+        spd = min(120, spd + random.randint(0, 10))
+    elif distance <= 2000: # 中距離
+        stam = min(120, stam + random.randint(0, 10))
+    else: # 長距離
+        stam = min(120, stam + random.randint(0, 15))
+
+    bot_horse = {
+        "id": horse_id,
+        "name": name,
+        "owner": BOT_OWNER_ID,
+        "stats": {
+            "SPD": spd,
+            "STAM": stam,
+            "POW": pow_,
+            "GRW": 0,
+            "fatigue": 0,
+            "age": random.randint(3, 5) # Bot馬はランダムな年齢
+        },
+        "money": 0,
+        "history": [],
+        "is_bot": True
     }
     
-    if stat_name not in allowed_stats_map:
-        await ctx.reply("⚠️ **エラー**: 強化できるステータスは `speed`, `stamina`, `temper`, `turf`(芝), `dirt`(ダート) のいずれかです。")
-        return
-        
-    target_stat = allowed_stats_map[stat_name]
-
-    # 3. 消費量のチェック
-    if not (1 <= amount <= MAX_TRAIN_AMOUNT):
-        await ctx.reply(f"⚠️ **エラー**: 消費するGRWの量は1から{MAX_TRAIN_AMOUNT}ポイントの間で指定してください。")
-        return
-
-    # 4. GRWの残高チェック
-    current_grw = horse["stats"].get("growth", 0)
-    if current_grw < amount:
-        await ctx.reply(f"⚠️ **エラー**: **{horse['name']}** の現在のGRWは {current_grw} です。{amount}ポイントを消費するにはGRWが不足しています。")
-        return
-        
-    # 5. 実行
-    
-    # GRW消費 
-    horse["stats"]["growth"] = max(0, current_grw - amount) 
-    
-    # ステータス増加 (変換レート1:1)
-    amount_to_add = amount * GRW_CONVERSION_RATE 
-    
-    old_stat_value = horse["stats"].get(target_stat, 0)
-    new_stat_value = min(100, old_stat_value + amount_to_add)
-    
-    horse["stats"][target_stat] = new_stat_value
-    
-    # 疲労増加
-    old_fatigue = horse.get("fatigue", 0)
-    horse["fatigue"] = min(10, old_fatigue + 1)
-    
-    await save_data(data)
-    
-    # 6. 結果報告
-    await ctx.reply(
-        f"✅ **{horse['name']}** を調教しました！\n"
-        f"消費GRW: **{amount}** (残り: {horse['stats']['growth']})\n"
-        f"強化ステータス: **{target_stat.upper().replace('_APT', '').replace('TURF', '芝').replace('DIRT', 'ダート')}** {old_stat_value} → **{new_stat_value}**\n"
-        f"疲労が1ポイント増加しました ({old_fatigue} → {horse['fatigue']})"
-    )
-
-
-@bot.command(name="balance", help="所持賞金と勝利数を確認します")
-async def balance(ctx):
-    data = await load_data()
-    uid = str(ctx.author.id)
-    owner = data["owners"].get(uid, {"balance": 0, "wins": 0})
-    await ctx.reply(f"賞金: {owner['balance']} / 勝利数: {owner['wins']}")
-
-@bot.command(name="rank", help="ランキング表示（賞金・勝利）")
-async def rank(ctx, category: str = "prize"):
-    data = await load_data()
-
-    if category not in ["prize", "wins"]:
-        await ctx.reply("カテゴリは 'prize' か 'wins' を指定してください。例) `!rank prize`")
-        return
-
-    if category == "prize":
-        board = {}
-        for uid, o in data["owners"].items():
-            if uid == BOT_OWNER_ID: continue
-            board[uid] = o.get("balance", 0)
-        
-        title = "👑 賞金ランキング 👑"
-        sorted_board = sorted(board.items(), key=lambda item: item[1], reverse=True)[:10]
-
-    else: # wins
-        board = {}
-        for uid, o in data["owners"].items():
-            if uid == BOT_OWNER_ID: continue
-            board[uid] = o.get("wins", 0)
-            
-        title = "🏆 勝利数ランキング 🏆"
-        sorted_board = sorted(board.items(), key=lambda item: item[1], reverse=True)[:10]
-
-    # ランキング表示の整形
-    rank_lines = [title, "----------------------------"]
-    
-    for i, (uid, value) in enumerate(sorted_board):
-        try:
-            user = bot.get_user(int(uid)) or await bot.fetch_user(int(uid))
-            name = user.display_name
-        except:
-            name = "引退したオーナー"
-
-        if category == "prize":
-            value_str = f"{value:,}円"
-        else:
-            value_str = f"{value}勝"
-            
-        rank_lines.append(f"**{i+1}位.** {name} ({value_str})")
-
-    await ctx.reply("\n".join(rank_lines))
-
-
-# 起動時の処理
-@bot.event
-async def on_ready():
-    print(f"Bot ready: {bot.user} | PID={os.getpid()}")
-
-
-# ----------------- タスクスケジューラ -----------------
-
-@tasks.loop(minutes=1)
-async def race_scheduler():
-    now = datetime.now(JST)
-    current_time_jst = now.time()
-    current_day = now.day # 月の日付を「日」として使用
-
-    # 1. レース告知 (RACE_TIME_JSTの1時間前)
-    if PRE_ANNOUNCE_TIME_JST.hour == current_time_jst.hour and PRE_ANNOUNCE_TIME_JST.minute == current_time_jst.minute:
-        await check_and_announce_race()
-        
-    # 2. レース実行 (RACE_TIME_JST)
-    if RACE_TIME_JST.hour == current_time_jst.hour and RACE_TIME_JST.minute == RACE_TIME_JST.minute:
-        await run_race_and_advance_day()
-
-
-async def check_and_announce_race():
-    data = await load_data()
-    channel_id = data["announce_channel"]
-    current_day = data["season"]["day"]
-    current_day_str = str(current_day)
-    
-    if not channel_id:
-        return
-
-    channel = bot.get_channel(channel_id)
-    if not channel:
-        return
-
-    race_info = data["schedule"].get(current_day_str)
-    
-    if not race_info:
-        # GⅠ期間外
-        await channel.send(f"🏇 **【レース告知】** ⏱️ 本日（第{current_day}週）はGⅠレースの開催はありませんが、定刻に日付更新と下級レースを行います。")
-        return
-        
-    entries_count = len(data.get("pending_entries", {}).get(current_day_str, []))
-    
-    if entries_count == 0:
-        await channel.send(
-            f"🏇 **【レース告知】** 📢\n"
-            f"まもなく開催！ GⅠ「**{race_info['name']}**」 ({race_info['distance']}m/{race_info['track']})\n"
-            f"現在のエントリー数は**0頭**です。出走したい馬は今すぐ `!entry <ID>` で登録してください！\n"
-            f"締め切りはレース開始時刻（{RACE_TIME_JST.hour:02}:{RACE_TIME_JST.minute:02} JST）です！"
-        )
-    else:
-        await channel.send(
-            f"🏇 **【レース告知】** 📢\n"
-            f"まもなく開催！ GⅠ「**{race_info['name']}**」 ({race_info['distance']}m/{race_info['track']})\n"
-            f"現在のエントリー数は**{entries_count}頭**です。エントリー締め切りまであと**1時間**！"
-        )
+    data["horses"][horse_id] = bot_horse
+    return horse_id, bot_horse
 
 
 async def run_race_and_advance_day():
     data = await load_data()
     current_day = data["season"]["day"]
-    current_month = data["season"]["month"]
-    current_year = data["season"]["year"]
-    current_day_str = str(current_day)
-    channel_id = data["announce_channel"]
+    day_key = str(current_day)
 
-    if not channel_id:
-        print("Announce channel not set. Skipping race execution.")
-        await advance_day(data)
-        return
+    # GⅠレース情報の確認
+    race_info = data["schedule"].get(day_key)
+    is_g1 = race_info is not None
 
-    channel = bot.get_channel(channel_id)
-    if not channel:
-        print(f"Channel with ID {channel_id} not found. Skipping race execution.")
-        await advance_day(data)
-        return
-
-    race_info = data["schedule"].get(current_day_str)
-    
-    is_g1 = bool(race_info)
+    entries_list = []
     
     if not is_g1:
         # GⅠのない日は下級レースを実施（固定レース情報）
         race_info = {"name": "下級レース", "distance": random.choice([1200, 1600, 2000, 2400]), "track": random.choice(["芝", "ダート"])}
         entries_list = []
-        # 下級レースでは、疲労が少ない全ての馬が自動でエントリーされる（疲労1未満）
+        # 下級レースでは、疲労が少ない全ての馬が自動でエントリーされる（疲労1 *未満*、つまり疲労0のみ）
         for hid, horse in data["horses"].items():
-            if horse["owner"] != BOT_OWNER_ID and horse.get("fatigue", 0) < 1:
+            if horse["owner"] != BOT_OWNER_ID and horse.get("fatigue", 0) < 1: 
                 entries_list.append(hid)
+        
+        # プレイヤー馬がいない場合は何もしない
+        if not entries_list:
+            await advance_day(data)
+            await save_data(data)
+            return
+            
+        # 下級レースは最大18頭（参加プレイヤー馬+Bot馬）
+        num_bot_horses = 18 - len(entries_list)
+        
     else:
-        # GⅠがある日
-        entries_list = data.get("pending_entries", {}).get(current_day_str, [])
+        # GⅠレースの場合
+        pending_data = data["pending_entries"].get(day_key)
+        if pending_data:
+            entries_list = pending_data["entries"]
         
-        # GⅠの出走頭数が少ない場合、Bot馬を補充
-        if len(entries_list) < MIN_G1_FIELD:
-            for _ in range(MIN_G1_FIELD - len(entries_list)):
-                bot_horse = generate_bot_horse(data["horses"])
-                data["horses"][bot_horse["id"]] = bot_horse
-                entries_list.append(bot_horse["id"])
-
-
-    
-    if not entries_list:
-        if is_g1:
-            await channel.send(f"本日(第{current_day}週)のGⅠ「**{race_info['name']}**」は、出走馬がいなかったためレースは中止されました。")
-        else:
-             await channel.send(f"本日(第{current_day}週)の下級レースは、出走可能な馬がいなかったため中止されました。")
-             
-        await advance_day(data)
-        return
-
-
-    # ------------------ レース実行ロジック ------------------
-    
-    all_entries = []
-    # 馬番をランダムに割り振るためにシャッフル
-    random.shuffle(entries_list) 
-    
-    post_position = 1
-    for horse_id in entries_list:
-        horse = data["horses"].get(horse_id)
-        if not horse:
-            continue
-            
-        score = calc_race_score(horse, race_info["distance"], race_info["track"])
+        # 最低出走頭数(MIN_G1_FIELD)までBot馬を補充
+        num_bot_horses = max(0, MIN_G1_FIELD - len(entries_list))
         
-        all_entries.append({
-            "horse_id": horse_id,
-            "horse_name": horse["name"],
-            "owner": horse["owner"],
-            "score": score,
-            "post_position": post_position
-        })
-        post_position += 1
-        
-        # 疲労増加と年齢上昇の準備
-        if horse["owner"] != BOT_OWNER_ID:
-            horse["fatigue"] = min(10, horse.get("fatigue", 0) + 2)
-            progress_growth(horse)
-            # レース後のGRWバフの効果は即時反映されるため、個別の記録は不要
-            
+        # プレイヤー馬が登録されていない場合は、レースは開催しない
+        if not entries_list:
+            await advance_day(data)
+            await save_data(data)
+            return
+
+    # Bot馬の生成とエントリー
+    for _ in range(num_bot_horses):
+        # GⅠレースは強力なBot馬を、下級レースは平均的なBot馬を生成
+        min_s, max_s = (70, 110) if is_g1 else (50, 80)
+        bot_hid, _ = generate_bot_horse(data, race_info, min_s, max_s)
+        entries_list.append(bot_hid)
+
+    # レースのシミュレーション
+    field_scores = []
+    for hid in entries_list:
+        horse = data["horses"][hid]
+        score = calculate_score(horse, race_info)
+        field_scores.append((score, hid, horse['name'], horse['owner']))
+
     # スコアでソートし、順位を決定
-    all_entries.sort(key=lambda x: x["score"], reverse=True)
+    field_scores.sort(key=lambda x: x[0], reverse=True)
     
-    results = []
-   # レース名に応じて賞金プールを決定
+    # 賞金プールを決定
     prize_config = prize_pool_for_g1(race_info['name']) if is_g1 else prize_pool_for_lower()
+    total_prize, payout_rate = prize_config
+
+    # 結果の処理と通知メッセージの準備
+    results = []
+    announcement = [f"📢 **{race_info['name']}** ({race_info['distance']}m/{race_info['track']}) 結果発表！\n"]
     
-    for i, entry in enumerate(all_entries):
-        pos = i + 1
+    # 着順に応じて賞金を付与
+    for rank, (score, hid, name, owner_id) in enumerate(field_scores, 1):
         prize = 0
-        if pos <= len(prize_config[1]):
-            prize = int(prize_config[0] * prize_config[1][i])
-        
-        entry["pos"] = pos
-        entry["prize"] = prize
-        results.append(entry)
-        
-        # 賞金と勝利数の更新
-        owner_id = entry["owner"]
-        if owner_id != BOT_OWNER_ID:
-            if owner_id not in data["owners"]:
-                data["owners"][owner_id] = {"horses": [], "balance": 0, "wins": 0}
-
-            data["owners"][owner_id]["balance"] = data["owners"][owner_id].get("balance", 0) + prize
+        if rank <= len(payout_rate):
+            prize = int(total_prize * payout_rate[rank-1])
             
-            if pos == 1:
-                data["horses"][entry["horse_id"]]["wins"] = data["horses"][entry["horse_id"]].get("wins", 0) + 1
-                data["owners"][owner_id]["wins"] = data["owners"][owner_id].get("wins", 0) + 1
-                
-        # レース履歴の追加
-        if entry["owner"] != BOT_OWNER_ID:
-             data["horses"][entry["horse_id"]]["history"].append({
-                 "race": race_info["name"],
-                 "pos": pos,
-                 "prize": prize,
-                 "date": f"{current_year}年{current_month}月{current_day}日"
-             })
+        # 馬とオーナーのデータを更新
+        horse = data["horses"][hid]
+        if horse["owner"] != BOT_OWNER_ID:
+            horse["money"] += prize
+        
+        # 疲労とGRWの更新
+        if not horse.get("is_bot"):
+            horse["stats"]["fatigue"] += 2 # 出走による疲労
+            horse["stats"]["GRW"] += random.randint(1, 3) # 出走によるGRW獲得
+        
+        # 履歴の保存
+        horse["history"].append({
+            "race": race_info["name"],
+            "rank": rank,
+            "prize": prize,
+            "day": current_day
+        })
+        
+        # ランキングの更新
+        if owner_id != BOT_OWNER_ID:
+            data["rankings"]["prize"][owner_id] = data["rankings"]["prize"].get(owner_id, 0) + prize
+            if rank == 1:
+                data["rankings"]["wins"][owner_id] = data["rankings"]["wins"].get(owner_id, 0) + 1
+            data["rankings"]["stable"][owner_id] = data["owners"][owner_id]["name"]
+        
+        results.append((rank, name, owner_id, prize))
+        
+        # 通知メッセージの作成
+        owner_name = data["owners"].get(owner_id, {}).get("name", "BOT")
+        if rank <= 5:
+            announcement.append(f"  **{rank}着**: {name} ({owner_name}) - ¥{prize:,}")
 
-
-    # ------------------ 結果告知とデータ更新 ------------------
-    await announce_race_results(data, race_info, results, current_day, current_month, current_year, channel, len(entries_list))
+    announcement.append("\n詳細な結果は`!list`や`!history`で確認できます。")
     
-    # 処理が完了したエントリーリストをクリア
-    if is_g1 and current_day_str in data["pending_entries"]:
-        del data["pending_entries"][current_day_str] 
+    # --- ★ 配当計算と支払い (固定オッズ方式に変更) ★ ---
+    
+    bet_pool_key = day_key
+    bets_on_race = data.get("pending_bets", {}).get(bet_pool_key, {})
+    payout_announcements = []
+
+    if is_g1 and bets_on_race: # GⅠかつ賭けが存在する場合
+        
+        # 1. 勝ち馬を特定
+        winner_entry = field_scores[0]
+        winner_id = winner_entry[1]
+        winner_name = winner_entry[2]
+        
+        # 2. 勝ち馬に賭けられたベットを取得
+        winning_bets = bets_on_race.get(winner_id, [])
+        total_payout = 0
+        total_user_stake = 0
+        
+        if winning_bets:
+            payout_announcements.append(f"\n***💰 馬券配当結果 (固定オッズ) 💰***")
+            payout_announcements.append(f"  勝ち馬: **{winner_name}**")
+            
+            # 3. 各ベットに対し、記録された固定オッズで支払い
+            for bet in winning_bets:
+                user_id = bet["user_id"]
+                user_stake = bet["amount"]
+                recorded_odds = bet["odds"] # ★ 記録されたオッズを使用
+                
+                # 支払い額 = 賭け金 * オッズ
+                payout = int(user_stake * recorded_odds)
+                
+                # 支払い
+                if user_id not in data["owners"]:
+                    # オーナー情報がなければ作成
+                    data["owners"][user_id] = {"horses": [], "name": f"User_{user_id}", "balance": 0} 
+                
+                data["owners"][user_id]["balance"] += payout
+                
+                total_payout += payout
+                total_user_stake += user_stake
+
+                try:
+                    user = bot.get_user(int(user_id)) or await bot.fetch_user(int(user_id))
+                    user_name = user.display_name
+                except:
+                    user_name = f"User_{user_id}"
+
+                payout_announcements.append(
+                    f"  **{user_name}** ({user_stake:,}円 @{recorded_odds:.1f}倍): {payout:,}円獲得！"
+                )
+
+            payout_announcements.append(f"（総払い戻し: {total_payout:,}円 / 総賭け金: {total_user_stake:,}円）")
+        
+        else:
+            # 勝ち馬に誰も賭けていない場合
+            total_pool_all_bets = sum(sum(b['amount'] for b in bet_list) for bet_list in bets_on_race.values())
+            payout_announcements.append("\n***💰 馬券配当結果 💰***")
+            payout_announcements.append(f"  勝ち馬（{winner_name}）に賭けたユーザーはいませんでした。（総賭け金 {total_pool_all_bets:,}円はBotの収益となります）")
+            
+    # ------------------ 結果告知とデータ更新 ------------------
+
+    channel_id = data.get("announce_channel")
+    channel = None
+    if channel_id:
+        channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+        if channel:
+            await channel.send("\n".join(announcement))
+    
+    # 配当メッセージを別送
+    if payout_announcements and channel:
+        await channel.send("\n".join(payout_announcements))
+    
+    # レース後の処理: GⅠエントリーをクリーンアップ
+    if is_g1 and day_key in data["pending_entries"]:
+        del data["pending_entries"][day_key]
+        
+    # 処理が完了した賭けをクリア
+    if bet_pool_key in data["pending_bets"]:
+        del data["pending_bets"][bet_pool_key]
     
     # 日付を進める
     await advance_day(data)
+    await save_data(data)
 
 
 async def advance_day(data):
-    """日付を1日進める処理（自動引退チェックを含む）"""
-    
-    # シーズンを進行
-    current_day = data["season"]["day"]
-    current_month = data["season"]["month"]
-    current_year = data["season"]["year"]
-    
-    new_day = current_day + 1
-    new_month = current_month
-    new_year = current_year
-    
-    # 30日でシーズン終了
-    if new_day > 30:
-        new_day = 1
-        new_month += 1
-        
-    if new_month > 12:
-        new_month = 1
-        new_year += 1
-        
-    data["season"]["day"] = new_day
-    data["season"]["month"] = new_month
-    data["season"]["year"] = new_year
-    
-    horses_to_retire_info = [] # Stores (horse_id, owner_id, horse_name)
+    """シーズンを進めるロジックと引退処理"""
+    season = data["season"]
+    current_day = season["day"]
 
-    # 全馬の rest_used_day をリセットし、引退チェック
-    for horse_id, horse in list(data["horses"].items()): # イテレーション中に削除するためコピーを使用
-        
-        if horse["owner"] == BOT_OWNER_ID:
-            # Bot馬は引退させない
-            continue
+    # 1. 引退処理
+    await check_and_retire_horses(data)
 
-        horse["rest_used_day"] = -1
-        
-        # 馬齢の更新 (シーズン開始日: 1月1日に固定)
-        if new_month == 1 and new_day == 1:
-             horse["age"] += 1
+    # 2. 日付を進める
+    current_day += 1
 
-        # --- 自動引退チェック ---
+    if current_day > MAX_G1_DAY:
+        # シーズン終了：次の年に
+        season["year"] += 1
+        season["month"] = 1 # 仮に1月1日とする
+        season["day"] = 1 # 1日目からスタート
+        
+        # 全馬の年齢を更新
+        for horse in data["horses"].values():
+            horse["age"] = horse.get("age", 2) + 1
+            
+        # シーズン終了告知は、レース実行ループの外で別途行うべきだが、ここでは単純化のため割愛
+        
+    else:
+        # 月日の更新は一旦簡易的に日を増やすのみ（複雑化を避けるため）
+        # 実際の月日を計算する
+        target_date = datetime(season["year"], 1, 1, tzinfo=JST) + timedelta(weeks=current_day - 1)
+        season["month"] = target_date.month
+        season["day"] = current_day # 内部的なシーズン日を維持
+
+    data["season"] = season
+
+
+async def check_and_retire_horses(data):
+    """引退条件（50レース以上 or 6歳以上）を満たした馬を引退させる"""
+    horses_to_retire_info = []
+
+    for horse_id, horse in data["horses"].items():
+        if horse.get("is_bot"):
+            continue # Bot馬は自動引退処理から除外
+
         should_retire = False
         
-        # 1. 50レース出走
+        # 1. 50レース以上
         race_count = len(horse.get("history", []))
         if race_count >= 50:
             should_retire = True
@@ -1315,7 +1177,7 @@ async def advance_day(data):
     if retired_names:
         channel_id = data.get("announce_channel")
         if channel_id:
-             channel = bot.get_channel(channel_id)
+             channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
              if channel:
                  await channel.send(
                      f"🚨 **引退通知**: 本日、規定により以下の**{len(retired_names)}頭**の競走馬が引退しました。\n"
@@ -1325,14 +1187,83 @@ async def advance_day(data):
                  print(f"Warning: Announce channel with ID {channel_id} not found.")
 
     await save_data(data)
-    print(f"Date advanced to: {new_year}/{new_month}/{new_day}")
+
+# ------------------ 定期タスク ------------------
+
+@tasks.loop(minutes=1)
+async def check_time():
+    now_jst = datetime.now(JST)
+    
+    # 告知時間チェック (時刻比較時、タイムゾーン情報(tzinfo)を取り除くことでTypeErrorを回避)
+    current_time_naive = now_jst.time().replace(tzinfo=None)
+    pre_announce_time_naive = PRE_ANNOUNCE_TIME_JST.replace(tzinfo=None)
+    race_time_naive = RACE_TIME_JST.replace(tzinfo=None)
+    
+    # 告知時間チェック
+    if current_time_naive >= pre_announce_time_naive and current_time_naive < race_time_naive:
+        await check_pre_announce()
+
+    # レース時間チェック
+    if current_time_naive >= race_time_naive:
+        # 既にレースが実行されていないかチェック（レース実行は1日に1回のみ）
+        data = await load_data()
+        last_race_day = data["season"].get("last_race_day", 0)
+        current_day = data["season"]["day"]
+
+        # 同一シーズン日でレースが未実行なら実行
+        if current_day != last_race_day:
+            data["season"]["last_race_day"] = current_day
+            await save_data(data)
+            await run_race_and_advance_day()
 
 
-# 起動
-@bot.event
-async def on_ready():
-    print(f"Bot ready: {bot.user}")
+async def check_pre_announce():
+    """レース1時間前に告知を行う"""
+    data = await load_data()
+    day_key = str(data["season"]["day"])
+    race_info = data["schedule"].get(day_key)
+    channel_id = data.get("announce_channel")
+    
+    # 既に告知済みか確認するフラグ（簡易的なインメモリフラグ）
+    if hasattr(check_pre_announce, 'announced_day') and check_pre_announce.announced_day == day_key:
+        return
 
-if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    bot.run(os.environ["DISCORD_TOKEN"])
+    if channel_id and race_info:
+        channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+        if channel:
+            total_prize, _ = prize_pool_for_g1(race_info['name'])
+            entries_count = len(data["pending_entries"].get(day_key, {}).get("entries", []))
+
+            message = (
+                f"🚨 **レース予告**（{RACE_TIME_JST.hour}:00 JST 開催予定）\n"
+                f"🏆 本日のGⅠレース: **{race_info['name']}** ({race_info['distance']}m/{race_info['track']})\n"
+                f"  賞金総額: ¥{total_prize:,} | 現在登録頭数: {entries_count}頭\n"
+                f"  まだ間に合います！`!entry [馬ID]` で急いで登録、`!bet [馬ID] [金額]` で馬券を購入しましょう。"
+            )
+            await channel.send(message)
+            
+            # 告知済みフラグをセット
+            check_pre_announce.announced_day = day_key
+
+
+# ------------------ データ管理コマンド ------------------
+
+@bot.command(name="setchannel", help="レース結果を通知するチャンネルを設定します")
+@commands.has_permissions(administrator=True)
+async def set_channel(ctx):
+    data = await load_data()
+    data["announce_channel"] = ctx.channel.id
+    await save_data(data)
+    await ctx.reply("✅ このチャンネルをレース結果の通知チャンネルに設定しました。")
+
+
+@bot.command(name="resetdata", help="⚠️全てのデータをリセットします（要確認）")
+@commands.has_permissions(administrator=True)
+async def reset_data(ctx):
+    token = str(random.randint(1000, 9999))
+    PENDING_RESETS[ctx.author.id] = token
+    await ctx.reply(f"⚠️ **警告**: この操作は全ての馬、オーナー、レース履歴を消去します。\n"
+                    f"続行する場合は、10秒以内に `!confirmreset {token}` と送信してください。")
+
+    await asyncio.sleep(10)
+    if ctx.author.id in PENDING_RESETS and PENDEN
