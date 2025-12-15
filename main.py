@@ -125,7 +125,7 @@ async def save_data(data):
 def default_schedule():
     """レーススケジュール定義（キーは文字列。第1週〜第30週に固定のGⅠを割り当てる）"""
     # 30個のGⅠを、シーズンの1日から30日に対応させる
-return {
+    return { # <-- ここを正しくインデントする
         # --------------------- 年末年始（ダート・海外） ---------------------
         "1":  {"name": "GⅠ 東京大賞典", "distance": 2000, "track": "ダート"},
         "2":  {"name": "GⅠ 川崎記念", "distance": 2100, "track": "ダート"}, # 地方GⅠ追加
@@ -150,14 +150,14 @@ return {
         "15": {"name": "GⅠ スプリンターズS", "distance": 1200, "track": "芝"},
         "16": {"name": "GⅠ 凱旋門賞", "distance": 2400, "track": "芝"},
         "17": {"name": "GⅠ 秋華賞", "distance": 2000, "track": "芝"},
-        "18": {"name": "GⅠ ジ・エベレスト", "distance": 1200, "track": "芝"}, # 高額賞金レース追加
+        "18": {"name": "GⅠ ジ・エベレスト", "distance": 1200, "track": "芝"},
         "19": {"name": "GⅠ 菊花賞", "distance": 3000, "track": "芝"},
         "20": {"name": "GⅠ 天皇賞（秋）", "distance": 2000, "track": "芝"},
         "21": {"name": "GⅠ エリザベス女王杯", "distance": 2200, "track": "芝"},
         "22": {"name": "GⅠ マイルCS", "distance": 1600, "track": "芝"},
         "23": {"name": "GⅠ ジャパンカップ", "distance": 2400, "track": "芝"},
         "24": {"name": "GⅠ チャンピオンズC", "distance": 1800, "track": "ダート"},
-        "25": {"name": "GⅠ チャンピオンズマイル", "distance": 1600, "track": "芝"}, # 海外マイル追加
+        "25": {"name": "GⅠ チャンピオンズマイル", "distance": 1600, "track": "芝"},
         "26": {"name": "GⅠ BCクラシック", "distance": 2000, "track": "ダート"},
         "27": {"name": "GⅠ 阪神JF", "distance": 1600, "track": "芝"},
         "28": {"name": "GⅠ 朝日杯FS", "distance": 1600, "track": "芝"},
