@@ -17,17 +17,19 @@ from supabase import create_client
 app = Flask(__name__)
 
 @app.route("/")
+def health():
+    return "ok", 200
+
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-threading.Thread(target=run_flask, daemon=True).start()
-
 # --------------- 基本設定 ---------------
 
-INTENTS = discord.Intents.default()
-INTENTS.message_content = True
-bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+intents = discord.Intents.default()
+intents.message_content = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -1309,4 +1311,5 @@ async def on_ready():
     print(f"Bot ready: {bot.user}")
 
 if __name__ == "__main__":
+    threading.Thread(target=run_flask, daemon=True).start()
     bot.run(os.environ["DISCORD_TOKEN"])
