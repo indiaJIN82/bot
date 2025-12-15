@@ -1339,5 +1339,4 @@ async def advance_day(data):
 
 # 起動
 if __name__ == "__main__":
-    keep_alive()
     bot.run(os.getenv("DISCORD_TOKEN"))
