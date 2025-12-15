@@ -5,17 +5,29 @@ import random
 import asyncio
 import calendar
 from datetime import datetime, timezone, timedelta, time 
-
+from flask import Flask
+from table2ascii import table2ascii as t2a, PresetStyle
 import discord
 from discord.ext import commands, tasks
 from supabase import create_client
 
+# ---------------- Flask (Render Health Check 用) ----------------
+
+app = Flask(__name__)
+
+@app.route("/")
+def health():
+    return "ok", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 # --------------- 基本設定 ---------------
 
 INTENTS = discord.Intents.default()
 INTENTS.message_content = True
-bot = commands.Bot(command_prefix="!", intents=INTENTS)
+bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -1294,5 +1306,9 @@ async def advance_day(data):
 
 
 # 起動
+@bot.event
+async def on_ready():
+    print(f"Bot ready: {bot.user}")
+
 if __name__ == "__main__":
     bot.run(os.getenv("DISCORD_TOKEN"))
