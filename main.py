@@ -797,7 +797,6 @@ async def entryall(ctx):
     
     await _perform_bulk_entry(ctx, data, all_horses, "全頭")
 
-
 @bot.command(name="entries", help="本日のGⅠレースの出馬表を表示します")
 async def entries(ctx):
     data = await load_data()
@@ -805,74 +804,31 @@ async def entries(ctx):
     current_month = data["season"]["month"]
     current_year = data["season"]["year"]
     current_day_str = str(current_day)
-    
+
     if current_day > MAX_G1_DAY:
-        await ctx.reply(f"{current_year}年{current_month}月 第{current_day}日（第{current_day}週）はGⅠ開催日ではありません。")
+        await ctx.reply(
+            f"{current_year}年{current_month}月 第{current_day}日（第{current_day}週）はGⅠ開催日ではありません。"
+        )
         return
-        
+
     race_info = data["schedule"].get(current_day_str)
-    
     if not race_info:
-        await ctx.reply(f"本日({current_day}日)はGⅠはありません。（スケジュールに定義されていません）")
+        await ctx.reply(
+            f"本日({current_day}日)はGⅠはありません。（スケジュールに定義されていません）"
+        )
         return
-    
+
     entries_list = data.get("pending_entries", {}).get(current_day_str, [])
-    
     if not entries_list:
-        await ctx.reply(f"本日のGⅠ「**{race_info['name']}**」にエントリーされている馬はいません。`!entry <ID>` で登録してください！")
+        await ctx.reply(
+            f"本日のGⅠ「**{race_info['name']}**」にエントリーされている馬はいません。"
+        )
         return
 
-    # GⅠレース情報
-    header = [
-        f"**🏆 {current_year}年{current_month}月 第{current_day}週 のGⅠ出馬表: {race_info['name']}**",
-        f"距離: {race_info['distance']}m / 馬場: {race_info['track']}",
-        "------------------------------------"
-    ]
-    
     entries_data = []
-    
-    # 登録順に馬番を割り振る
-    post_position_counter = 1
+    post_position = 1
+
     for hid in entries_list:
-        horse = data["horses"].get(hid)
-        if not horse:
-            # エントリーリストに存在するがhorsesに存在しないIDは無視 (過去のバグ馬ID対策)
-            continue
-            
-        # Bot馬はentriesコマンドでは表示しない
-        if horse["owner"] == BOT_OWNER_ID:
-             continue
-        
-        # オーナー名を取得
-        owner_name = "不明なオーナー"
-        try:
-            owner_user = bot.get_user(int(horse["owner"])) or await bot.fetch_user(int(horse["owner"]))
-            owner_name = owner_user.display_name
-        except:
-            pass
-            
-        entries_data.append({
-            "name": horse["name"],
-            "id": hid,
-            "owner": owner_name,
-            "fatigue": horse.get("fatigue", 0),
-            "wins": horse.get("wins", 0),
-            "post_position": post_position_counter # 登録順に馬番を付与
-        })
-        post_position_counter += 1
-
-    if not entries_data:
-        await ctx.reply(f"本日のGⅠ「**{race_info['name']}**」にエントリーされているプレイヤー馬はいません。`!entry <ID>` で登録してください！")
-        return
-        
-    # 馬番順にソートして表示
-    entries_data.sort(key=lambda x: x["post_position"])
-
-    # 表示をテーブル形式で整形
-    table_body = []
-    post = 1
-
-    for hid in raw_entries:
         horse = data["horses"].get(hid)
         if not horse or horse["owner"] == BOT_OWNER_ID:
             continue
@@ -883,32 +839,32 @@ async def entries(ctx):
         except:
             owner_name = "不明"
 
-        table_body.append([
-            post,
+        entries_data.append([
+            post_position,
             hid,
             horse["name"],
             owner_name,
             horse.get("fatigue", 0),
-            horse.get("wins", 0)
+            horse.get("wins", 0),
         ])
-        post += 1
+        post_position += 1
 
-    if not table_body:
-        await ctx.reply("プレイヤー馬のエントリーはありません。")
+    if not entries_data:
+        await ctx.reply("本日のGⅠにエントリーされているプレイヤー馬はいません。")
         return
 
     ascii_table = t2a(
         header=["馬番", "ID", "馬名", "オーナー", "疲労", "勝利"],
-        body=table_body,
+        body=entries_data,
         style=PresetStyle.thin_compact
     )
 
-    header = (
-        f"🏆 **{year}年{month}月 第{day}週 GⅠ出馬表**\n"
+    header_text = (
+        f"🏆 **{current_year}年{current_month}月 第{current_day}週 GⅠ出馬表**\n"
         f"{race_info['name']} / {race_info['distance']}m / {race_info['track']}\n"
     )
 
-    await ctx.reply(header + "```" + ascii_table + "```")
+    await ctx.reply(header_text + "```" + ascii_table + "```")
 
 @bot.command(name="rest", help="馬を休養させて疲労を回復します（1日1回）: 例) !rest H12345")
 async def rest(ctx, horse_id: str):
