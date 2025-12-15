@@ -1257,6 +1257,8 @@ async def set_channel(ctx):
     await ctx.reply("✅ このチャンネルをレース結果の通知チャンネルに設定しました。")
 
 
+# main.py の 1259行目付近
+
 @bot.command(name="resetdata", help="⚠️全てのデータをリセットします（要確認）")
 @commands.has_permissions(administrator=True)
 async def reset_data(ctx):
@@ -1266,4 +1268,61 @@ async def reset_data(ctx):
                     f"続行する場合は、10秒以内に `!confirmreset {token}` と送信してください。")
 
     await asyncio.sleep(10)
-    if ctx.author.id in PENDING_RESETS and PENDEN
+    # ここで途切れていた部分を完成させる
+    if ctx.author.id in PENDING_RESETS and PENDING_RESETS[ctx.author.id] == token:
+        del PENDING_RESETS[ctx.author.id]
+        await ctx.author.send("リセット待機時間が経過しました。リセットは実行されません。")
+        await ctx.reply("リセット待機時間が経過しました。")
+
+@bot.command(name="confirmreset", help="!resetdataの確認")
+@commands.has_permissions(administrator=True)
+async def confirm_reset(ctx, token: str):
+    if ctx.author.id in PENDING_RESETS and PENDING_RESETS[ctx.author.id] == token:
+        # リセット実行
+        data = await load_data()
+        
+        # データベース内のデータをデフォルトデータで上書き
+        default_data = {
+            "horses": {},
+            "owners": {},
+            "races": [],
+            "schedule": default_schedule(),
+            "rankings": {"prize": {}, "wins": {}, "stable": {}},
+            "announce_channel": data.get("announce_channel"), # 通知チャンネル設定は残す
+            "pending_entries": {},
+            "pending_bets": {}
+        }
+        
+        # シーズン情報もリセット
+        today = datetime.now(JST)
+        default_data["season"] = {
+            "year": today.year,
+            "month": today.month,
+            "day": today.day,
+            "last_race_day": 0
+        }
+
+        await save_data(default_data)
+        del PENDING_RESETS[ctx.author.id]
+        
+        await ctx.reply("✅ **データリセットが完了しました。** 全ての馬、オーナー、レース履歴が消去されました。")
+    else:
+        await ctx.reply("トークンが無効か、リセット待機時間が経過しました。")
+
+# ------------------ 実行 ------------------
+
+def keep_alive():
+    # Flaskサーバーを別スレッドで起動
+    t = threading.Thread(target=run_flask)
+    t.start()
+
+if __name__ == "__main__":
+    from flask import Flask # ★ Flaskのインポート位置を修正
+    keep_alive() 
+    
+    # Discord Bot Tokenは環境変数から取得
+    BOT_TOKEN = os.getenv("DISCORD_TOKEN")
+    if not BOT_TOKEN:
+        raise RuntimeError("DISCORD_TOKEN is not set")
+        
+    bot.run(BOT_TOKEN)
