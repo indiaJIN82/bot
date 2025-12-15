@@ -858,17 +858,22 @@ async def check_and_retire_horses(data):
     # スケジュールがシーズン終了時に自動的に更新されるロジックを追加する場合は、ここに進める
 
 # ------------------ 定期タスク ------------------
-
 @tasks.loop(minutes=1)
 async def check_time():
     now_jst = datetime.now(JST)
     
+    # 告知時間チェック (時刻比較時、タイムゾーン情報(tzinfo)を取り除くことでTypeErrorを回避)
+    # now_jst.time().replace(tzinfo=None) と比較対象の時刻のtzinfoを取り除く
+    current_time_naive = now_jst.time().replace(tzinfo=None)
+    pre_announce_time_naive = PRE_ANNOUNCE_TIME_JST.replace(tzinfo=None)
+    race_time_naive = RACE_TIME_JST.replace(tzinfo=None)
+    
     # 告知時間チェック
-    if now_jst.time() >= PRE_ANNOUNCE_TIME_JST and now_jst.time() < RACE_TIME_JST:
+    if current_time_naive >= pre_announce_time_naive and current_time_naive < race_time_naive:
         await check_pre_announce()
 
     # レース時間チェック
-    if now_jst.time() >= RACE_TIME_JST:
+    if current_time_naive >= race_time_naive: # <= ここも修正
         # 既にレースが実行されていないかチェック（レース実行は1日に1回のみ）
         data = await load_data()
         last_race_day = data["season"].get("last_race_day", 0)
