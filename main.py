@@ -1348,7 +1348,7 @@ async def run_race_and_advance_day():
 
     # ベットもクリア
     if current_day_str in data.get("bets", {}):
-    del data["bets"][current_day_str]
+        del data["bets"][current_day_str]
     
     # 日付を進める
     await advance_day(data)
