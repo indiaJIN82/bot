@@ -16,12 +16,11 @@ from supabase import create_client
 app = Flask(__name__)
 
 @app.route("/")
-def health():
-    return "ok", 200
-
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
+threading.Thread(target=run_flask, daemon=True).start()
 
 # --------------- 基本設定 ---------------
 
@@ -1026,9 +1025,7 @@ async def rank(ctx, category: str = "prize"):
 # 起動時の処理
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user.name}')
-    # タスクの開始
-    race_scheduler.start()
+    print(f"Bot ready: {bot.user} | PID={os.getpid()}")
 
 
 # ----------------- タスクスケジューラ -----------------
@@ -1311,4 +1308,4 @@ async def on_ready():
     print(f"Bot ready: {bot.user}")
 
 if __name__ == "__main__":
-    bot.run(os.getenv("DISCORD_TOKEN"))
+    bot.run(os.environ["DISCORD_TOKEN"])
