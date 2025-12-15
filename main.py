@@ -12,6 +12,29 @@ import discord
 from discord.ext import commands, tasks
 from supabase import create_client
 
+def cut_horse_name(name: str, max_width: float = 10.0) -> str:
+    """
+    馬名を 10 文字相当までに制限する関数（英字/数字は 0.8 文字換算）
+    """
+    width = 0.0
+    result = []
+
+    for ch in name:
+        # 半角英字・数字は 0.8
+        if ch.isascii() and ch.isalnum():
+            w = 0.8
+        else:
+            w = 1.0
+
+        # 制限を超えると終了
+        if width + w > max_width:
+            break
+
+        result.append(ch)
+        width += w
+
+    return "".join(result)
+
 # ---------------- Flask (Render Health Check 用) ----------------
 
 app = Flask(__name__)
@@ -856,7 +879,7 @@ async def entries(ctx):
         entries_data.append([
             post_position,
             hid,
-            horse["name"],
+            cut_horse_name(horse["name"]),
             owner_name,
             horse.get("fatigue", 0),
             horse.get("wins", 0),
