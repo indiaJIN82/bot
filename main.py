@@ -125,35 +125,42 @@ async def save_data(data):
 def default_schedule():
     """レーススケジュール定義（キーは文字列。第1週〜第30週に固定のGⅠを割り当てる）"""
     # 30個のGⅠを、シーズンの1日から30日に対応させる
-    return {
-        "1":  {"name": "GⅠ 京都金杯", "distance": 1600, "track": "芝"},
-        "2":  {"name": "GⅠ 中山金杯", "distance": 2000, "track": "芝"},
-        "3":  {"name": "GⅠ フェアリーS", "distance": 1600, "track": "芝"},
-        "4":  {"name": "GⅠ 京成杯", "distance": 2000, "track": "芝"},
-        "5":  {"name": "GⅠ 根岸S", "distance": 1400, "track": "ダート"},
-        "6":  {"name": "GⅠ 東京新聞杯", "distance": 1600, "track": "芝"},
-        "7":  {"name": "GⅠ 共同通信杯", "distance": 1800, "track": "芝"},
-        "8":  {"name": "GⅠ フェブラリーS", "distance": 1600, "track": "ダート"},
-        "9":  {"name": "GⅠ 高松宮記念", "distance": 1200, "track": "芝"},
-        "10": {"name": "GⅠ 大阪杯", "distance": 2000, "track": "芝"},
-        "11": {"name": "GⅠ 桜花賞", "distance": 1600, "track": "芝"},
-        "12": {"name": "GⅠ 皐月賞", "distance": 2000, "track": "芝"},
-        "13": {"name": "GⅠ 天皇賞（春）", "distance": 3200, "track": "芝"},
-        "14": {"name": "GⅠ NHKマイルC", "distance": 1600, "track": "芝"},
-        "15": {"name": "GⅠ 日本ダービー", "distance": 2400, "track": "芝"},
-        "16": {"name": "GⅠ 安田記念", "distance": 1600, "track": "芝"},
-        "17": {"name": "GⅠ 宝塚記念", "distance": 2200, "track": "芝"},
-        "18": {"name": "GⅠ スプリンターズS", "distance": 1200, "track": "芝"},
-        "19": {"name": "GⅠ 秋華賞", "distance": 2000, "track": "芝"},
-        "20": {"name": "GⅠ 菊花賞", "distance": 3000, "track": "芝"},
-        "21": {"name": "GⅠ 天皇賞（秋）", "distance": 2000, "track": "芝"},
-        "22": {"name": "GⅠ エリザベス女王杯", "distance": 2200, "track": "芝"},
-        "23": {"name": "GⅠ マイルCS", "distance": 1600, "track": "芝"},
-        "24": {"name": "GⅠ ジャパンカップ", "distance": 2400, "track": "芝"},
-        "25": {"name": "GⅠ チャンピオンズC", "distance": 1800, "track": "ダート"},
-        "26": {"name": "GⅠ 阪神JF", "distance": 1600, "track": "芝"},
-        "27": {"name": "GⅠ 朝日杯FS", "distance": 1600, "track": "芝"},
-        "28": {"name": "GⅠ 東京大賞典", "distance": 2000, "track": "ダート"},
+return {
+        # --------------------- 年末年始（ダート・海外） ---------------------
+        "1":  {"name": "GⅠ 東京大賞典", "distance": 2000, "track": "ダート"},
+        "2":  {"name": "GⅠ 川崎記念", "distance": 2100, "track": "ダート"}, # 地方GⅠ追加
+        "3":  {"name": "GⅠ サウジカップ", "distance": 1800, "track": "ダート"},
+        "4":  {"name": "GⅠ ドバイWC", "distance": 2000, "track": "ダート"},
+        
+        # --------------------- 春のクラシック・短距離 ---------------------
+        "5":  {"name": "GⅠ 高松宮記念", "distance": 1200, "track": "芝"},
+        "6":  {"name": "GⅠ 桜花賞", "distance": 1600, "track": "芝"},
+        "7":  {"name": "GⅠ 皐月賞", "distance": 2000, "track": "芝"},
+        "8":  {"name": "GⅠ 天皇賞（春）", "distance": 3200, "track": "芝"},
+        "9":  {"name": "GⅠ NHKマイルC", "distance": 1600, "track": "芝"},
+        "10": {"name": "GⅠ 日本ダービー", "distance": 2400, "track": "芝"},
+        "11": {"name": "GⅠ 安田記念", "distance": 1600, "track": "芝"},
+        
+        # --------------------- 初夏・夏（交流・欧州） ---------------------
+        "12": {"name": "GⅠ 帝王賞", "distance": 2000, "track": "ダート"},
+        "13": {"name": "GⅠ 宝塚記念", "distance": 2200, "track": "芝"},
+        "14": {"name": "GⅠ キングジョージ6世&クイーンエリザベスS", "distance": 2400, "track": "芝"},
+        
+        # --------------------- 秋のGⅠシーズン ---------------------
+        "15": {"name": "GⅠ スプリンターズS", "distance": 1200, "track": "芝"},
+        "16": {"name": "GⅠ 凱旋門賞", "distance": 2400, "track": "芝"},
+        "17": {"name": "GⅠ 秋華賞", "distance": 2000, "track": "芝"},
+        "18": {"name": "GⅠ ジ・エベレスト", "distance": 1200, "track": "芝"}, # 高額賞金レース追加
+        "19": {"name": "GⅠ 菊花賞", "distance": 3000, "track": "芝"},
+        "20": {"name": "GⅠ 天皇賞（秋）", "distance": 2000, "track": "芝"},
+        "21": {"name": "GⅠ エリザベス女王杯", "distance": 2200, "track": "芝"},
+        "22": {"name": "GⅠ マイルCS", "distance": 1600, "track": "芝"},
+        "23": {"name": "GⅠ ジャパンカップ", "distance": 2400, "track": "芝"},
+        "24": {"name": "GⅠ チャンピオンズC", "distance": 1800, "track": "ダート"},
+        "25": {"name": "GⅠ チャンピオンズマイル", "distance": 1600, "track": "芝"}, # 海外マイル追加
+        "26": {"name": "GⅠ BCクラシック", "distance": 2000, "track": "ダート"},
+        "27": {"name": "GⅠ 阪神JF", "distance": 1600, "track": "芝"},
+        "28": {"name": "GⅠ 朝日杯FS", "distance": 1600, "track": "芝"},
         "29": {"name": "GⅠ ホープフルS", "distance": 2000, "track": "芝"},
         "30": {"name": "GⅠ 有馬記念", "distance": 2500, "track": "芝"},
     }
@@ -252,9 +259,25 @@ def calc_race_score(horse, distance, track):
     score = base * apt_factor * condition_factor * rand * cond
     return score
 
-def prize_pool_for_g1():
-    total = 200_000
-    return total, [0.55, 0.2, 0.12, 0.08, 0.05]
+def prize_pool_for_g1(race_name):
+    """GⅠレース名に基づき、賞金プールを決定する"""
+    
+    # 高額賞金レース
+    if "サウジカップ" in race_name or "ドバイWC" in race_name or "ジ・エベレスト" in race_name or "有馬記念" in race_name or "ジャパン" in race_name:
+        total = 500_000 # 海外トップクラス
+        
+    # 海外主要・地方交流レース
+    elif "凱旋門賞" in race_name or "キングジョージ6世" in race_name or "BCクラシック" in race_name or "チャンピオンズマイル" in race_name:
+        total = 300_000 # 日本GⅠよりやや高額
+        
+    # 日本のGⅠレース（デフォルト）
+    else:
+        total = 200_000 
+        
+    # GⅠの配分率は変わらず、5着まで
+    payout_rate = [0.55, 0.2, 0.12, 0.08, 0.05]
+    
+    return total, payout_rate
 
 def prize_pool_for_lower():
     """下級レースの賞金設定"""
@@ -1170,7 +1193,8 @@ async def run_race_and_advance_day():
     all_entries.sort(key=lambda x: x["score"], reverse=True)
     
     results = []
-    prize_config = prize_pool_for_g1() if is_g1 else prize_pool_for_lower()
+   # レース名に応じて賞金プールを決定
+    prize_config = prize_pool_for_g1(race_info['name']) if is_g1 else prize_pool_for_lower()
     
     for i, entry in enumerate(all_entries):
         pos = i + 1
