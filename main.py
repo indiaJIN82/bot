@@ -142,6 +142,16 @@ async def save_data(data):
     }).execute()
 
 
+def calculate_odds(horse):
+    """
+    勝利数をもとに固定オッズ計算
+    """
+    base = 6.0
+    wins = horse.get("wins", 0)
+    odds = base / (wins + 1)
+    return round(max(1.2, odds), 1)
+
+
 def default_schedule():
     """レーススケジュール定義（キーは文字列。第1週〜第30週に固定のGⅠを割り当てる）"""
     # 30個のGⅠを、シーズンの1日から30日に対応させる
@@ -467,6 +477,95 @@ async def _perform_bulk_entry(ctx, data, target_horses, entry_type):
 
 
 # ----------------- コマンド -----------------
+
+@bot.command(name="bet", help="出走馬に賭けます （例: !bet H12345 1000）")
+async def bet(ctx, horse_id: str, amount: int):
+    data = await load_data()
+    user_id = str(ctx.author.id)
+
+    # 出走リスト取得
+    day = str(data["season"]["day"])
+    entries = data.get("pending_entries", {}).get(day, [])
+    if horse_id not in entries:
+        await ctx.reply("指定された馬は本日の出走リストにありません。")
+        return
+
+    # 所持金チェック
+    users = data.setdefault("users", {})
+    user = users.setdefault(user_id, {"money": 0})
+    money = user.get("money", 0)
+
+    if amount <= 0:
+        await ctx.reply("賭け金は 1 以上で指定してください。")
+        return
+
+    if money < amount:
+        await ctx.reply(f"所持金が不足しています（現在: {money}）")
+        return
+
+    # 既存の bets を取得（なければ初期化）
+    bets = data.setdefault("bets", {}).setdefault(day, {})
+    if user_id in bets:
+        await ctx.reply("本日のレースには既に賭けています。")
+        return
+
+    horse = data["horses"].get(horse_id)
+    if not horse:
+        await ctx.reply("その馬は存在しません。")
+        return
+
+    odds_val = calculate_odds(horse)
+
+    # 賭けを登録して所持金を減らす
+    bets[user_id] = {
+        "horse_id": horse_id,
+        "amount": amount,
+        "odds": odds_val
+    }
+    user["money"] -= amount
+
+    await save_data(data)
+
+    payout = int(amount * odds_val)
+
+    await ctx.reply(
+        f"🎫 **賭けを受け付けました！**\n"
+        f"馬名: {horse['name']}\n"
+        f"賭け金: {amount}\n"
+        f"オッズ: {odds_val} 倍\n"
+        f"的中時の払戻: {payout}"
+    )
+
+@bot.command(name="odds", help="本日の出走馬オッズ一覧を表示します")
+async def odds(ctx):
+    data = await load_data()
+
+    day = str(data["season"]["day"])
+    entries = data.get("pending_entries", {}).get(day, [])
+    if not entries:
+        await ctx.reply("本日の出走馬がいません。")
+        return
+
+    odds_table = []
+    for hid in entries:
+        horse = data["horses"].get(hid)
+        if not horse:
+            continue
+        odds_val = calculate_odds(horse)
+        odds_table.append([hid, horse["name"], horse.get("wins", 0), odds_val])
+
+    if not odds_table:
+        await ctx.reply("オッズを表示する出走馬がいません。")
+        return
+
+    ascii_table = t2a(
+        header=["馬ID", "馬名", "勝利数", "オッズ"],
+        body=odds_table,
+        style=PresetStyle.thin_compact
+    )
+
+    await ctx.reply("🏇 **本日のオッズ**\n```" + ascii_table + "```")
+
 
 @bot.command(name="resetdata", help="[管理] データファイルを初期化します（2段階認証が必要です）")
 @commands.has_permissions(administrator=True)
@@ -1067,7 +1166,7 @@ async def race_scheduler():
         await check_and_announce_race()
         
     # 2. レース実行 (RACE_TIME_JST)
-    if RACE_TIME_JST.hour == current_time_jst.hour and RACE_TIME_JST.minute == RACE_TIME_JST.minute:
+    if RACE_TIME_JST.hour == current_time_jst.hour and RACE_TIME_JST.minute == current_time_jst.minute:
         await run_race_and_advance_day()
 
 
@@ -1194,6 +1293,8 @@ async def run_race_and_advance_day():
     # スコアでソートし、順位を決定
     all_entries.sort(key=lambda x: x["score"], reverse=True)
     
+    winner_id = all_entries[0]["horse_id"]
+    
     results = []
    # レース名に応じて賞金プールを決定
     prize_config = prize_pool_for_g1(race_info['name']) if is_g1 else prize_pool_for_lower()
@@ -1229,6 +1330,14 @@ async def run_race_and_advance_day():
                  "date": f"{current_year}年{current_month}月{current_day}日"
              })
 
+    # 処理例
+    bets = data.get("bets", {}).get(current_day_str, {})
+    
+    for uid, b in bets.items():
+        if b["horse_id"] == winner_id:
+            payout = int(b["amount"] * b["odds"])
+            data["users"].setdefault(uid, {"money":0})
+            data["users"][uid]["money"] += payout
 
     # ------------------ 結果告知とデータ更新 ------------------
     await announce_race_results(data, race_info, results, current_day, current_month, current_year, channel, len(entries_list))
@@ -1236,6 +1345,10 @@ async def run_race_and_advance_day():
     # 処理が完了したエントリーリストをクリア
     if is_g1 and current_day_str in data["pending_entries"]:
         del data["pending_entries"][current_day_str] 
+
+    # ベットもクリア
+    if current_day_str in data.get("bets", {}):
+    del data["bets"][current_day_str]
     
     # 日付を進める
     await advance_day(data)
