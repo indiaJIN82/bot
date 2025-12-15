@@ -1,3 +1,4 @@
+from table2ascii import table2ascii as t2a, PresetStyle
 import os
 import json
 import random
@@ -885,19 +886,47 @@ async def entries(ctx):
     # 馬番順にソートして表示
     entries_data.sort(key=lambda x: x["post_position"])
 
-    # 表示をテーブル形式で整形 (Markdownのテーブル記法を使用)
-    body = [""]
-    # ヘッダー
-    body.append(f"| {'馬番':<3} | {'ID':<6} | {'馬名':<10} | {'オーナー':<15} | {'疲労':<4} |")
-    # 整形ライン
-    body.append("|:---:|:-----|:-----------|:-----------------|:----:|")
-    
-    for entry in entries_data:
-        body.append(
-            f"| {entry['post_position']:<3} | {entry['id']} | {entry['name']} | {entry['owner']} | {entry['fatigue']} |"
-        )
-        
-    await ctx.reply("\n".join(header + body))
+    # 表示をテーブル形式で整形
+    table_body = []
+    post = 1
+
+    for hid in raw_entries:
+        horse = data["horses"].get(hid)
+        if not horse or horse["owner"] == BOT_OWNER_ID:
+            continue
+
+        try:
+            user = bot.get_user(int(horse["owner"])) or await bot.fetch_user(int(horse["owner"]))
+            owner_name = user.display_name
+        except:
+            owner_name = "不明"
+
+        table_body.append([
+            post,
+            hid,
+            horse["name"],
+            owner_name,
+            horse.get("fatigue", 0),
+            horse.get("wins", 0)
+        ])
+        post += 1
+
+    if not table_body:
+        await ctx.reply("プレイヤー馬のエントリーはありません。")
+        return
+
+    ascii_table = t2a(
+        header=["馬番", "ID", "馬名", "オーナー", "疲労", "勝利"],
+        body=table_body,
+        style=PresetStyle.thin_compact
+    )
+
+    header = (
+        f"🏆 **{year}年{month}月 第{day}週 GⅠ出馬表**\n"
+        f"{race_info['name']} / {race_info['distance']}m / {race_info['track']}\n"
+    )
+
+    await ctx.reply(header + "```" + ascii_table + "```")
 
 @bot.command(name="rest", help="馬を休養させて疲労を回復します（1日1回）: 例) !rest H12345")
 async def rest(ctx, horse_id: str):
