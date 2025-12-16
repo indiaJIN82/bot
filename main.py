@@ -478,6 +478,35 @@ async def _perform_bulk_entry(ctx, data, target_horses, entry_type):
 
 # ----------------- コマンド -----------------
 
+@bot.command(name="racehistory", help="馬の過去のレース結果を表示します: 例) !racehistory H12345")
+async def racehistory(ctx, horse_id: str):
+    data = await load_data()
+    horse = data["horses"].get(horse_id)
+
+    if not horse:
+        await ctx.reply("そのIDの馬は存在しません。")
+        return
+
+    if horse["owner"] == BOT_OWNER_ID:
+        await ctx.reply("このコマンドでは協会生産馬の履歴は確認できません。")
+        return
+
+    if not horse.get("history"):
+        await ctx.reply(f"{horse['name']} はまだレースに出走していません。")
+        return
+
+    lines = [f"{horse['name']} のレース履歴:"]
+    for r in horse["history"]:
+        # 履歴データには month と day が含まれるようになった
+        day = r.get('day', 'N/A')
+        month = r.get('month', 'N/A')
+        year = r.get('year', 'N/A')
+        lines.append(
+            f" - {year}年 {month}月 第{day}週 {r['race']} ({r['pos']}着) "
+            f"賞金:{r['prize']} (スコア:{r['score']:.2f})"
+        )
+    await ctx.reply("\n".join(lines))
+
 @bot.command(name="raceresults", help="過去のレース全結果を表示します: 例) !raceresults 2024 1 1 (2024年1月 第1週のレース)")
 async def raceresults(ctx, year: int, month: int, day: int):
     data = await load_data()
