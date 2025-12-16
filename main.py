@@ -611,15 +611,15 @@ async def bet(ctx, horse_id: str, amount: int):
 
     # 所持金チェック
     users = data.setdefault("users", {})
-    user = users.setdefault(user_id, {"money": 0})
-    money = user.get("money", 0)
+    user = users.setdefault(user_id, {"balance": 0})
+    balance = user.get("balance", 0)
 
     if amount <= 0:
         await ctx.reply("賭け金は 1 以上で指定してください。")
         return
 
-    if money < amount:
-        await ctx.reply(f"所持金が不足しています（現在: {money}）")
+    if balance < amount:
+        await ctx.reply(f"所持金が不足しています（現在: {balance}）")
         return
 
     # 既存の bets を取得（なければ初期化）
@@ -641,7 +641,7 @@ async def bet(ctx, horse_id: str, amount: int):
         "amount": amount,
         "odds": odds_val
     }
-    user["money"] -= amount
+    user["balance"] -= amount
 
     await save_data(data)
 
@@ -1495,8 +1495,8 @@ async def run_race_and_advance_day():
     for uid, b in bets.items():
         if b["horse_id"] == winner_id:
             payout = int(b["amount"] * b["odds"])
-            data["users"].setdefault(uid, {"money":0})
-            data["users"][uid]["money"] += payout
+            data["users"].setdefault(uid, {"balance":0})
+            data["users"][uid]["balance"] += payout
 
     # ------------------ 結果告知とデータ更新 ------------------
     await announce_race_results(data, race_info, results, current_day, current_month, current_year, channel, len(entries_list))
