@@ -94,6 +94,162 @@ MIN_G1_FIELD = 18
 # GⅠが開催される最大の日数（週数）
 MAX_G1_DAY = 30 
 
+async def run_race_logic(data, is_forced=False):
+    """
+    GⅠレースを実行し、その後下級レースを実行する
+    """
+    current_day = data["season"]["day"]
+    current_month = data["season"]["month"]
+    current_year = data["season"]["year"]
+    current_day_str = str(current_day)
+    
+    # GⅠは1日から30日に開催（31日はGⅠなし）
+    if current_day <= MAX_G1_DAY:
+        race_info = data["schedule"].get(current_day_str)
+    else:
+        race_info = None # GⅠ無し
+
+    
+    channel = None
+    channel_id = data.get("announce_channel")
+    if channel_id:
+        channel = bot.get_channel(channel_id)
+
+    # ------------------ 1. GⅠレースの実行準備 ------------------
+    
+    g1_entries = data.get("pending_entries", {}).get(current_day_str, [])
+    player_entries_count = len(g1_entries) 
+    
+    g1_held = False
+    
+    if race_info: # GⅠが予定されている日（1〜30日）
+        bot_horses_to_add = []
+        
+        # Bot馬の補充が必要な数の計算
+        num_bot_horses = max(0, MIN_G1_FIELD - player_entries_count)
+        
+        # プレイヤー馬のIDを結合してBot馬のIDの重複を避ける
+        existing_ids = set(data["horses"].keys()) 
+        
+        for _ in range(num_bot_horses):
+            bot_horse = generate_bot_horse(existing_ids)
+            bot_horses_to_add.append(bot_horse)
+            existing_ids.add(bot_horse["id"])
+        
+        total_entries_count = player_entries_count + len(bot_horses_to_add)
+        
+        if total_entries_count >= 2:
+            
+            total, ratios = prize_pool_for_g1()
+            field = []
+            current_post_position = 1 # 馬番のカウンタ
+            
+            # プレイヤー馬のデータを取得し、馬番を割り振る (登録順)
+            for hid in g1_entries:
+                horse = data["horses"].get(hid)
+                if not horse: continue
+                score = calc_race_score(horse, race_info["distance"], race_info["track"])
+                field.append({
+                    "id": hid, "name": horse["name"], "owner": horse["owner"], 
+                    "score": score, "post_position": current_post_position
+                })
+                current_post_position += 1
+                
+            # Bot馬のデータを追加し、馬番を割り振る (プレイヤー馬の次から)
+            for horse in bot_horses_to_add:
+                score = calc_race_score(horse, race_info["distance"], race_info["track"])
+                field.append({
+                    "id": horse["id"], "name": horse["name"], "owner": horse["owner"], 
+                    "score": score, "post_position": current_post_position
+                })
+                current_post_position += 1
+
+
+            # ------------------ 1-1. GⅠレースの実行 ------------------
+
+            field.sort(key=lambda x: x["score"], reverse=True) # スコアで着順を決定
+
+            results = []
+            for idx, entry in enumerate(field):
+                pos = idx + 1
+                hid = entry["id"]
+                owner = entry["owner"]
+                score = entry["score"]
+                hname = entry["name"]
+                
+                prize = 0
+                if idx < len(ratios):
+                    prize = int(total * ratios[idx])
+                
+                if owner != BOT_OWNER_ID:
+                    o = data["owners"].get(owner)
+                    if o:
+                        o["balance"] = o.get("balance", 0) + prize
+                        if pos == 1:
+                            o["wins"] = o.get("wins", 0) + 1
+
+                    h = data["horses"].get(hid)
+                    if h:
+                        if pos == 1:
+                            h["wins"] = h.get("wins", 0) + 1
+                        h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(2, 4))
+                        progress_growth(h)
+                        
+                        # 【修正箇所】履歴に year, month, day を保存
+                        h["history"].append({
+                            "year": current_year,
+                            "month": current_month,
+                            "day": current_day,
+                            "race": race_info["name"],
+                            "pos": pos,
+                            "score": round(score, 2),
+                            "prize": prize
+                        })
+
+                results.append({
+                    "pos": pos, 
+                    "horse_id": hid, 
+                    "horse_name": hname,
+                    "owner": owner, 
+                    "score": round(score, 2), 
+                    "prize": prize,
+                    "post_position": entry["post_position"] # 割り振った馬番を使用
+                })
+
+            # 【修正箇所】レース記録に year, month, day を保存
+            data["races"].append({
+                "year": current_year,
+                "month": current_month,
+                "day": current_day,
+                "name": race_info["name"],
+                "distance": race_info["distance"],
+                "track": race_info["track"],
+                "results": results
+            })
+
+            data.get("pending_entries", {}).pop(current_day_str, None)
+
+            if channel:
+                # 【修正箇所】告知関数に day, month, year を渡す
+                await announce_race_results(data, race_info, results, current_day, current_month, current_year, channel, total_entries_count)
+            
+            g1_held = True
+
+        elif race_info and total_entries_count < 2:
+            if channel:
+                await channel.send(f"⚠️ {current_year}年{current_month}月 第{current_day}週 のGⅠ「{race_info['name']}」はプレイヤー馬とBot馬を合わせても2頭未満のため開催されませんでした。")
+    
+    # ------------------ 2. 下級レースの実行 ------------------
+    
+    entered_player_horses_id = set(g1_entries) 
+    all_player_horses_id = set([hid for hid, h in data["horses"].items() if h["owner"] != BOT_OWNER_ID]) 
+    
+    # GⅠにエントリーしなかったプレイヤー馬、またはGⅠが開催されなかった日（31日など）の全プレイヤー馬
+    horses_not_entered = list(all_player_horses_id - entered_player_horses_id)
+    
+    # 【修正箇所】下級レース実行関数に day, month, year を渡す
+    await run_lower_race_logic(data, horses_not_entered, current_day, current_month, current_year, channel)
+
 async def load_data():
     default_data = {
         "horses": {},
