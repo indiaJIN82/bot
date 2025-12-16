@@ -883,7 +883,173 @@ async def entry(ctx, horse_id: str):
     await save_data(data)
 
     await ctx.reply(f"出走登録完了！ 本日(第{current_day}週)のGⅠに **{horse['name']}** をエントリーしました。")
+
+@bot.command(name="raceresults", help="過去のレース全結果を表示します: 例) !raceresults 2024 1 1 (2024年1月 第1週のレース)")
+async def raceresults(ctx, year: int, month: int, day: int):
+    data = await load_data()
     
+    # 指定された年、月、日のレース結果を検索
+    found_races = [
+        r for r in data["races"] 
+        if r.get("year") == year and r.get("month") == month and r.get("day") == day
+    ]
+    
+    if not found_races:
+        await ctx.reply(f"{year}年{month}月 第{day}週 に開催されたレースの結果は見つかりませんでした。\n(レースは開催日と開催順に記録されます)")
+        return
+    
+    response_lines = []
+        
+    for race in found_races:
+        race_info = {
+            "name": race["name"],
+            "distance": race["distance"],
+            "track": race["track"]
+        }
+        results = race["results"]
+        entries_count = len(results)
+        
+        # 結果表示のヘッダー
+        msg_lines = [
+            "========================",
+            f"**🏆 {race_info['name']} 結果 ({year}年{month}月 第{day}週)**",
+            f"距離: {race_info['distance']}m / 馬場: {race_info['track']} / **{entries_count}頭立て**",
+            "------------------------"
+        ]
+        
+        # 賞金が付く順位を決定 (GⅠは5着まで、下級レースは3着まで)
+        # GⅠは名前に 'GⅠ' が含まれることで判定
+        prize_count = 5 if race_info['name'].startswith("GⅠ") else 3
+
+        for r in results:
+            owner_display = ""
+            if r['owner'] == BOT_OWNER_ID:
+                owner_display = "**協会生産**"
+            else:
+                # オーナーのDiscord表示名を取得
+                try:
+                    owner_user = bot.get_user(int(r['owner'])) or await bot.fetch_user(int(r['owner']))
+                    owner_display = owner_user.display_name
+                except:
+                    owner_display = f"ID:{r['owner']}" # 取得できない場合はIDを表示
+            
+            line = f"**{r['pos']}着** ({r['post_position']}番) **{r['horse_name']}** (オーナー:{owner_display})"
+            
+            # race_historyにはscoreが保存されているが、race_resultsには保存されていないため、prizeのみ表示
+            if r.get('prize', 0) > 0:
+                 line += f" 賞金:{r['prize']}" 
+            
+            msg_lines.append(line)
+        
+        response_lines.extend(msg_lines)
+        response_lines.append("\n") # レース間に空白行を追加
+    
+    # 最後の空行を削除
+    if response_lines and response_lines[-1] == "\n":
+        response_lines.pop()
+
+    await ctx.reply("\n".join(response_lines))
+
+# ----------------- 下級レース処理関数 -----------------
+
+async def run_lower_race_logic(data, horses_not_entered, current_day, current_month, current_year, channel):
+    """
+    GⅠに出走しなかった馬を対象に下級レースを自動開催する
+    """
+    
+    entries = [hid for hid in horses_not_entered if data["horses"].get(hid) and data["horses"][hid]["owner"] != BOT_OWNER_ID]
+    entries_count = len(entries)
+    
+    if entries_count < 2:
+        if channel:
+             await channel.send(f"ℹ️ {current_year}年{current_month}月 第{current_day}週 の下級レースはエントリー馬が2頭未満のため開催されませんでした。")
+        return
+
+    # 下級レースのランダムな設定
+    random_distance = random.choice([1200, 1400, 1600, 1800, 2000, 2200, 2400])
+    random_track = random.choice(["芝", "ダート"])
+    
+    race_info = {
+        "name": "一発逆転！京都ファイナルレース", 
+        "distance": random_distance,
+        "track": random_track
+    }
+    
+    total, ratios = prize_pool_for_lower() 
+
+    field = []
+    # 馬番割り振りとデータ整形 (エントリー順に1から割り振る)
+    for idx, hid in enumerate(entries):
+        horse = data["horses"].get(hid)
+        score = calc_race_score(horse, race_info["distance"], race_info["track"])
+        
+        field.append({
+            "id": hid, "name": horse["name"], "owner": horse["owner"], 
+            "score": score, "post_position": idx + 1 # 1から始まる馬番を割り振り
+        })
+
+    field.sort(key=lambda x: x["score"], reverse=True) # スコアで着順を決定
+
+    results = []
+    for idx, entry in enumerate(field):
+        pos = idx + 1
+        hid = entry["id"]
+        owner = entry["owner"]
+        score = entry["score"]
+        hname = entry["name"]
+        
+        prize = 0
+        if idx == 0: prize = 10000
+        elif idx == 1: prize = 5000
+        elif idx == 2: prize = 2000
+
+        # オーナーデータ更新
+        o = data["owners"].get(owner)
+        if o:
+            o["balance"] = o.get("balance", 0) + prize
+            if pos == 1:
+                o["wins"] = o.get("wins", 0) + 1
+
+        # 馬データ更新
+        h = data["horses"].get(hid)
+        if h:
+            if pos == 1:
+                h["wins"] = h.get("wins", 0) + 1
+            h["fatigue"] = min(10, h.get("fatigue", 0) + random.randint(1, 3)) 
+            progress_growth(h)
+            
+            # 履歴に year, month, day を保存
+            h["history"].append({
+                "year": current_year,
+                "month": current_month,
+                "day": current_day,
+                "race": race_info["name"],
+                "pos": pos,
+                "score": round(score, 2),
+                "prize": prize
+            })
+
+        results.append({
+            "pos": pos, 
+            "horse_id": hid, 
+            "horse_name": hname,
+            "owner": owner, 
+            "score": round(score, 2), 
+            "prize": prize,
+            "post_position": entry["post_position"] # 割り振った馬番を使用
+        })
+
+    # レース記録に year, month, day を保存
+    data["races"].append({
+        "year": current_year,
+        "month": current_month,
+        "day": current_day,
+        "name": race_info["name"],
+        "distance": random_distance,
+        "track": random_track,
+        "results": results
+    })
+
 # 【既存】出走登録取り消しコマンド
 @bot.command(name="unentry", help="本日のレースへの出走登録を取り消します: 例) !unentry H12345")
 async def unentry(ctx, horse_id: str):
