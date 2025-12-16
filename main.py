@@ -35,6 +35,9 @@ def cut_horse_name(name: str, max_width: float = 10.0) -> str:
 
     return "".join(result)
 
+def is_admin(ctx):
+    return ctx.author.id in ADMIN_IDS
+
 # ---------------- Flask (Render Health Check 用) ----------------
 
 app = Flask(__name__)
@@ -477,6 +480,35 @@ async def _perform_bulk_entry(ctx, data, target_horses, entry_type):
 
 
 # ----------------- コマンド -----------------
+
+@bot.command(name="forcerace", help="【管理者】現在の日付で強制的にレースを実行します")
+async def force_race(ctx):
+    if not is_admin(ctx):
+        await ctx.reply("このコマンドは管理者専用です。")
+        return
+
+    data = await load_data()
+
+    current_day = data["season"]["day"]
+    current_month = data["season"]["month"]
+    current_year = data["season"]["year"]
+    current_day_str = str(current_day)
+
+    # 出走馬がいない場合の安全チェック
+    entries = data.get("pending_entries", {}).get(current_day_str, [])
+    if not entries:
+        await ctx.reply("本日は出走馬がいないため、レースを実行できません。")
+        return
+
+    await ctx.reply(
+        f"⚠️ **管理者操作**\n"
+        f"{current_year}年{current_month}月{current_day}日のレースを強制実行します。"
+    )
+
+    # 本来のレース処理をそのまま呼ぶ
+    await run_race_and_advance_day()
+
+    await ctx.reply("🏁 強制レースを実行し、日付を進めました。")
 
 @bot.command(name="bet", help="出走馬に賭けます （例: !bet H12345 1000）")
 async def bet(ctx, horse_id: str, amount: int):
