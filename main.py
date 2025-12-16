@@ -481,8 +481,8 @@ async def _perform_bulk_entry(ctx, data, target_horses, entry_type):
 
 # ----------------- コマンド -----------------
 
-@bot.command(name="forcerace", help="【管理者】現在の日付で強制的にレースを実行します")
-async def force_race(ctx):
+@bot.command(name="forcerace", help="[管理]現在の日付で強制的にレースを実行します")
+async def forcerace(ctx):
     if not is_admin(ctx):
         await ctx.reply("このコマンドは管理者専用です。")
         return
@@ -494,21 +494,19 @@ async def force_race(ctx):
     current_year = data["season"]["year"]
     current_day_str = str(current_day)
 
-    # 出走馬がいない場合の安全チェック
     entries = data.get("pending_entries", {}).get(current_day_str, [])
     if not entries:
         await ctx.reply("本日は出走馬がいないため、レースを実行できません。")
         return
 
     await ctx.reply(
-        f"⚠️ **管理者操作**\n"
+        f"⚠️ 管理者操作\n"
         f"{current_year}年{current_month}月{current_day}日のレースを強制実行します。"
     )
 
-    # 本来のレース処理をそのまま呼ぶ
     await run_race_and_advance_day()
 
-    await ctx.reply("🏁 強制レースを実行し、日付を進めました。")
+    await ctx.reply("🏁 レースを実行し、日付を進めました。")
 
 @bot.command(name="bet", help="出走馬に賭けます （例: !bet H12345 1000）")
 async def bet(ctx, horse_id: str, amount: int):
@@ -674,22 +672,6 @@ async def confirmreset(ctx):
     supabase.table("kv_store").delete().eq("key", DATA_KEY).execute()
     
     await ctx.reply("✅ **データファイルを削除しました。** Botを再起動すると新しい状態で始まります。")
-
-@bot.command(name="forcerace", help="[管理] 今週のレースを即時開催します（週は進めない）")
-@commands.has_permissions(administrator=True)
-async def forcerace(ctx):
-    data = await load_data()
-    
-    await ctx.reply("今週のレース開催を試みます（週は進行しません）。")
-    
-    race_held, race_info, total_entries_count = await run_race_logic(data, is_forced=True)
-    
-    if race_held:
-        await ctx.send("GⅠおよび下級レースの処理が完了しました。結果は告知チャンネルをご確認ください。")
-    elif race_info:
-        await ctx.send("GⅠエントリー馬が2頭未満でした。下級レースの結果と合わせて告知チャンネルをご確認ください。")
-    else:
-        await ctx.send("今週はレースが予定されていませんでした。下級レースの結果と合わせて告知チャンネルをご確認ください。")
     
 @bot.command(name="setannounce", help="[管理] レース結果を告知するチャンネルを設定します")
 @commands.has_permissions(administrator=True)
