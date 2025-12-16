@@ -478,6 +478,72 @@ async def _perform_bulk_entry(ctx, data, target_horses, entry_type):
 
 # ----------------- コマンド -----------------
 
+@bot.command(name="raceresults", help="過去のレース全結果を表示します: 例) !raceresults 2024 1 1 (2024年1月 第1週のレース)")
+async def raceresults(ctx, year: int, month: int, day: int):
+    data = await load_data()
+    
+    # 指定された年、月、日のレース結果を検索
+    found_races = [
+        r for r in data["races"] 
+        if r.get("year") == year and r.get("month") == month and r.get("day") == day
+    ]
+    
+    if not found_races:
+        await ctx.reply(f"{year}年{month}月 第{day}週 に開催されたレースの結果は見つかりませんでした。\n(レースは開催日と開催順に記録されます)")
+        return
+    
+    response_lines = []
+        
+    for race in found_races:
+        race_info = {
+            "name": race["name"],
+            "distance": race["distance"],
+            "track": race["track"]
+        }
+        results = race["results"]
+        entries_count = len(results)
+        
+        # 結果表示のヘッダー
+        msg_lines = [
+            "========================",
+            f"**🏆 {race_info['name']} 結果 ({year}年{month}月 第{day}週)**",
+            f"距離: {race_info['distance']}m / 馬場: {race_info['track']} / **{entries_count}頭立て**",
+            "------------------------"
+        ]
+        
+        # 賞金が付く順位を決定 (GⅠは5着まで、下級レースは3着まで)
+        # GⅠは名前に 'GⅠ' が含まれることで判定
+        prize_count = 5 if race_info['name'].startswith("GⅠ") else 3
+
+        for r in results:
+            owner_display = ""
+            if r['owner'] == BOT_OWNER_ID:
+                owner_display = "**協会生産**"
+            else:
+                # オーナーのDiscord表示名を取得
+                try:
+                    owner_user = bot.get_user(int(r['owner'])) or await bot.fetch_user(int(r['owner']))
+                    owner_display = owner_user.display_name
+                except:
+                    owner_display = f"ID:{r['owner']}" # 取得できない場合はIDを表示
+            
+            line = f"**{r['pos']}着** ({r['post_position']}番) **{r['horse_name']}** (オーナー:{owner_display})"
+            
+            # race_historyにはscoreが保存されているが、race_resultsには保存されていないため、prizeのみ表示
+            if r.get('prize', 0) > 0:
+                 line += f" 賞金:{r['prize']}" 
+            
+            msg_lines.append(line)
+        
+        response_lines.extend(msg_lines)
+        response_lines.append("\n") # レース間に空白行を追加
+    
+    # 最後の空行を削除
+    if response_lines and response_lines[-1] == "\n":
+        response_lines.pop()
+
+    await ctx.reply("\n".join(response_lines))
+
 @bot.command(name="forcerace", help="[管理]現在の日付で強制的にレースを実行します")
 @commands.has_permissions(administrator=True) # <-- 追加
 async def forcerace(ctx):
