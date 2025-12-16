@@ -35,9 +35,6 @@ def cut_horse_name(name: str, max_width: float = 10.0) -> str:
 
     return "".join(result)
 
-def is_admin(ctx):
-    return ctx.author.id in ADMIN_IDS
-
 # ---------------- Flask (Render Health Check 用) ----------------
 
 app = Flask(__name__)
@@ -482,11 +479,8 @@ async def _perform_bulk_entry(ctx, data, target_horses, entry_type):
 # ----------------- コマンド -----------------
 
 @bot.command(name="forcerace", help="[管理]現在の日付で強制的にレースを実行します")
+@commands.has_permissions(administrator=True) # <-- 追加
 async def forcerace(ctx):
-    if not is_admin(ctx):
-        await ctx.reply("このコマンドは管理者専用です。")
-        return
-
     data = await load_data()
 
     current_day = data["season"]["day"]
@@ -606,11 +600,8 @@ async def odds(ctx):
     await ctx.reply("🏇 **本日のオッズ**\n```" + ascii_table + "```")
 
 @bot.command(name="nextday", help="[管理]日付を1日進めます（レース処理なし）")
+@commands.has_permissions(administrator=True) # <-- 追加
 async def next_day(ctx):
-    if not is_admin(ctx):
-        await ctx.reply("このコマンドは管理者専用です。")
-        return
-
     data = await load_data()
 
     before = (
