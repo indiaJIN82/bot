@@ -566,7 +566,7 @@ async def odds(ctx):
 
     await ctx.reply("🏇 **本日のオッズ**\n```" + ascii_table + "```")
 
-@bot.command(name="nextday", help="【管理者】日付を1日進めます（レース処理なし）")
+@bot.command(name="nextday", help="[管理]日付を1日進めます（レース処理なし）")
 async def next_day(ctx):
     if not is_admin(ctx):
         await ctx.reply("このコマンドは管理者専用です。")
@@ -643,7 +643,22 @@ async def confirmreset(ctx):
     
     await ctx.reply("✅ **データファイルを削除しました。** Botを再起動すると新しい状態で始まります。")
 
-
+@bot.command(name="forcerace", help="[管理] 今週のレースを即時開催します（週は進めない）")
+@commands.has_permissions(administrator=True)
+async def forcerace(ctx):
+    data = await load_data()
+    
+    await ctx.reply("今週のレース開催を試みます（週は進行しません）。")
+    
+    race_held, race_info, total_entries_count = await run_race_logic(data, is_forced=True)
+    
+    if race_held:
+        await ctx.send("GⅠおよび下級レースの処理が完了しました。結果は告知チャンネルをご確認ください。")
+    elif race_info:
+        await ctx.send("GⅠエントリー馬が2頭未満でした。下級レースの結果と合わせて告知チャンネルをご確認ください。")
+    else:
+        await ctx.send("今週はレースが予定されていませんでした。下級レースの結果と合わせて告知チャンネルをご確認ください。")
+    
 @bot.command(name="setannounce", help="[管理] レース結果を告知するチャンネルを設定します")
 @commands.has_permissions(administrator=True)
 async def setannounce(ctx, channel: discord.TextChannel):
