@@ -576,13 +576,22 @@ async def odds(ctx):
         await ctx.reply("本日の出走馬がいません。")
         return
 
-    odds_table = []
-    for hid in entries:
-        horse = data["horses"].get(hid)
-        if not horse:
-            continue
-        odds_val = calculate_odds(horse)
-        odds_table.append([hid, horse["cut_horse_name"], horse.get("wins", 0), odds_val])
+odds_table = []
+for hid in entries:
+    horse = data["horses"].get(hid)
+    if not horse:
+        continue
+
+    odds_val = calculate_odds(horse)
+
+    cut_name = cut_horse_name(horse["name"])  # ← ここで生成
+
+    odds_table.append([
+        hid,
+        cut_name,
+        horse.get("wins", 0),
+        odds_val
+    ])
 
     if not odds_table:
         await ctx.reply("オッズを表示する出走馬がいません。")
