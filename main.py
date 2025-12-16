@@ -552,7 +552,7 @@ async def odds(ctx):
         if not horse:
             continue
         odds_val = calculate_odds(horse)
-        odds_table.append([hid, horse["name"], horse.get("wins", 0), odds_val])
+        odds_table.append([hid, horse["cut_horse_name"], horse.get("wins", 0), odds_val])
 
     if not odds_table:
         await ctx.reply("オッズを表示する出走馬がいません。")
@@ -566,6 +566,41 @@ async def odds(ctx):
 
     await ctx.reply("🏇 **本日のオッズ**\n```" + ascii_table + "```")
 
+@bot.command(name="nextday", help="【管理者】日付を1日進めます（レース処理なし）")
+async def next_day(ctx):
+    if not is_admin(ctx):
+        await ctx.reply("このコマンドは管理者専用です。")
+        return
+
+    data = await load_data()
+
+    before = (
+        data["season"]["year"],
+        data["season"]["month"],
+        data["season"]["day"]
+    )
+
+    # 未処理データの掃除（任意だが推奨）
+    current_day_str = str(data["season"]["day"])
+    data.get("pending_entries", {}).pop(current_day_str, None)
+    data.get("bets", {}).pop(current_day_str, None)
+
+    # 日付を進める（既存関数を利用）
+    await advance_day(data)
+
+    after = (
+        data["season"]["year"],
+        data["season"]["month"],
+        data["season"]["day"]
+    )
+
+    await save_data(data)
+
+    await ctx.reply(
+        f"📅 **日付を進めました**\n"
+        f"{before[0]}年{before[1]}月{before[2]}日 → "
+        f"{after[0]}年{after[1]}月{after[2]}日"
+    )
 
 @bot.command(name="resetdata", help="[管理] データファイルを初期化します（2段階認証が必要です）")
 @commands.has_permissions(administrator=True)
