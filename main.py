@@ -77,7 +77,7 @@ PENDING_RESETS = {}
 
 # 自動レース時刻と事前告知時刻
 RACE_TIME_JST = time(hour=19, minute=0, tzinfo=JST)
-PRE_ANNOUNCE_TIME_JST = time(hour=18, minute=0, tzinfo=JST) 
+PRE_ANNOUNCE_TIME_JST = time(hour=18, minute=48, tzinfo=JST) 
 
 # Bot馬用のオーナーID (DiscordのUIDとは異なる、集計用の特殊ID)
 BOT_OWNER_ID = "0" 
@@ -1304,18 +1304,22 @@ async def rank(ctx, category: str = "prize"):
 
 # ----------------- タスクスケジューラ -----------------
 
-@tasks.loop(seconds=1)
-async def race_scheduler():
-    now = datetime.now(JST)
-    t = now.time()
-        
-    if (PRE_ANNOUNCE_TIME_JST.hour == current_time_jst.hour
-        and PRE_ANNOUNCE_TIME_JST.minute == current_time_jst.minute):
-        await check_and_announce_race()
-    
-    if (RACE_TIME_JST.hour == current_time_jst.hour
-        and RACE_TIME_JST.minute == current_time_jst.minute):
-        await run_race_and_advance_day()
+@tasks.loop(time=PRE_ANNOUNCE_TIME_JST)
+async def pre_announce_task():
+    await check_and_announce_race()
+
+
+@pre_announce_task.before_loop
+async def before_pre_announce_task():
+    await bot.wait_until_ready()
+
+@tasks.loop(time=RACE_TIME_JST)
+async def race_task():
+    await run_race_and_advance_day()
+
+@race_task.before_loop
+async def before_race_task():
+    await bot.wait_until_ready()
 
 async def check_and_announce_race():
     data = await load_data()
@@ -1598,6 +1602,12 @@ async def advance_day(data):
 @bot.event
 async def on_ready():
     print(f"Bot ready: {bot.user}")
+
+    if not pre_announce_task.is_running():
+        pre_announce_task.start()
+
+    if not race_task.is_running():
+        race_task.start()
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
