@@ -35,6 +35,12 @@ def cut_horse_name(name: str, max_width: float = 10.0) -> str:
 
     return "".join(result)
 
+def get_owner(data, user_id):
+    return data["owners"].setdefault(
+        str(user_id),
+        {"balance": 0, "wins": 0, "horses": []}
+    )
+
 # ---------------- Flask (Render Health Check 用) ----------------
 
 app = Flask(__name__)
@@ -600,53 +606,39 @@ async def forcerace(ctx):
 @bot.command(name="bet", help="出走馬に賭けます （例: !bet H12345 1000）")
 async def bet(ctx, horse_id: str, amount: int):
     data = await load_data()
-    user_id = str(ctx.author.id)
+    uid = str(ctx.author.id)
 
-    # 出走リスト取得
-    day = str(data["season"]["day"])
-    entries = data.get("pending_entries", {}).get(day, [])
-    if horse_id not in entries:
-        await ctx.reply("指定された馬は本日の出走リストにありません。")
-        return
-
-    # 所持金チェック
-    owners = data.setdefault("owners", {})
-    user = owners.setdefault(user_id, {"balance": 0})
-    balance = user.get("balance", 0)
+    owner = get_owner(data, uid)
 
     if amount <= 0:
-        await ctx.reply("賭け金は 1 以上で指定してください。")
+        await ctx.reply("賭け金は正の整数で指定してください。")
         return
 
-    if balance < amount:
-        await ctx.reply(f"所持金が不足しています（現在: {balance}）")
+    if owner["balance"] < amount:
+        await ctx.reply("所持金が足りません。")
         return
 
-    # 既存の bets を取得（なければ初期化）
-    bets = data.setdefault("bets", {}).setdefault(day, {})
-    if user_id in bets:
-        await ctx.reply("本日のレースには既に賭けています。")
+    # 出走確認
+    today = str(data["season"]["day"])
+    entries = data.get("pending_entries", {}).get(today, [])
+    if horse_id not in entries:
+        await ctx.reply("その馬は本日のレースに出走していません。")
         return
 
-    horse = data["horses"].get(horse_id)
-    if not horse:
-        await ctx.reply("その馬は存在しません。")
-        return
+    # オッズ計算
+    horse = data["horses"][horse_id]
+    odds = calculate_odds(horse)
 
-    odds_val = calculate_odds(horse)
-
-    # 賭けを登録して所持金を減らす
-    bets[user_id] = {
+    data.setdefault("bets", {})
+    data["bets"][uid] = {
         "horse_id": horse_id,
         "amount": amount,
-        "odds": odds_val
+        "odds": odds
     }
-    user["balance"] -= amount
 
+    owner["balance"] -= amount
     await save_data(data)
-
-    payout = int(amount * odds_val)
-
+    
     await ctx.reply(
         f"🎫 **賭けを受け付けました！**\n"
         f"馬名: {horse['name']}\n"
@@ -1317,23 +1309,13 @@ async def on_ready():
 @tasks.loop(minutes=1)
 async def race_scheduler():
     now = datetime.now(JST)
-    current_time_jst = now.time()
-    current_day = now.day # 月の日付を「日」として使用
+    t = now.time()
 
-    # 1. レース告知 (RACE_TIME_JSTの1時間前)
-    if (
-        current_time_jst.hour == PRE_ANNOUNCE_TIME_JST.hour
-        and current_time_jst.minute == PRE_ANNOUNCE_TIME_JST.minute
-    ):
+    if t.hour == PRE_ANNOUNCE_TIME_JST.hour and t.minute == PRE_ANNOUNCE_TIME_JST.minute:
         await check_and_announce_race()
-        
-    # 2. レース実行 (RACE_TIME_JST)
-    if (
-        current_time_jst.hour == RACE_TIME_JST.hour
-        and current_time_jst.minute == RACE_TIME_JST.minute
-    ):
-        await run_race_and_advance_day()
 
+    if t.hour == RACE_TIME_JST.hour and t.minute == RACE_TIME_JST.minute:
+        await run_race_and_advance_day()
 
 async def check_and_announce_race():
     data = await load_data()
@@ -1498,11 +1480,17 @@ async def run_race_and_advance_day():
     # 処理例
     bets = data.get("bets", {}).get(current_day_str, {})
     
+    winner_id = results[0]["horse_id"]
+
+    bets = data.get("bets", {})
     for uid, b in bets.items():
         if b["horse_id"] == winner_id:
             payout = int(b["amount"] * b["odds"])
-            data["owners"].setdefault(uid, {"balance":0})
-            data["owners"][uid]["balance"] += payout
+            owner = get_owner(data, uid)
+            owner["balance"] += payout
+
+    # 賭け情報をクリア
+    data["bets"] = {}
 
     # ------------------ 結果告知とデータ更新 ------------------
     await announce_race_results(data, race_info, results, current_day, current_month, current_year, channel, len(entries_list))
