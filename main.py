@@ -1308,11 +1308,13 @@ async def rank(ctx, category: str = "prize"):
 async def race_scheduler():
     now = datetime.now(JST)
     t = now.time()
-
-    if t.hour == PRE_ANNOUNCE_TIME_JST.hour and t.minute == PRE_ANNOUNCE_TIME_JST.minute:
+        
+    if (PRE_ANNOUNCE_TIME_JST.hour == current_time_jst.hour
+        and PRE_ANNOUNCE_TIME_JST.minute == current_time_jst.minute):
         await check_and_announce_race()
-
-    if t.hour == RACE_TIME_JST.hour and t.minute == RACE_TIME_JST.minute:
+    
+    if (RACE_TIME_JST.hour == current_time_jst.hour
+        and RACE_TIME_JST.minute == current_time_jst.minute):
         await run_race_and_advance_day()
 
 async def check_and_announce_race():
