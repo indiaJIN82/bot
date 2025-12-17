@@ -633,11 +633,16 @@ async def bet(ctx, horse_id: str, amount: int):
     day = str(data["season"]["day"])
     data.setdefault("bets", {})
     data["bets"].setdefault(day, {})
-    data["bets"][day][uid] = {...}
+    data["bets"][day][uid] = {
+        "horse_id": horse_id,
+        "amount": amount,
+        "odds": odds
+    }
 
     owner["balance"] -= amount
     await save_data(data)
-    
+
+    payout = int(amount * odds)
     await ctx.reply(
         f"🎫 **賭けを受け付けました！**\n"
         f"馬名: {horse['name']}\n"
@@ -1297,18 +1302,10 @@ async def rank(ctx, category: str = "prize"):
     await ctx.reply("\n".join(rank_lines))
 
 
-# 起動時の処理
-@bot.event
-async def on_ready():
-    print(f"Bot ready: {bot.user} | PID={os.getpid()}")
-
-
 # ----------------- タスクスケジューラ -----------------
 
-@bot.event
-async def on_ready():
-    if not race_scheduler.is_running():
-        race_scheduler.start()
+@tasks.loop(seconds=1)
+async def race_scheduler():
     now = datetime.now(JST)
     t = now.time()
 
@@ -1460,8 +1457,8 @@ async def run_race_and_advance_day():
         # 賞金と勝利数の更新
         owner_id = entry["owner"]
         if owner_id != BOT_OWNER_ID:
-            if owner_id not in data["owner"]:
-                data["owner"][owner_id] = {"horses": [], "balance": 0, "wins": 0}
+            if owner_id not in data["owners"]:
+                data["owners"][owner_id] = {"horses": [], "balance": 0, "wins": 0}
 
             data["owners"][owner_id]["balance"] = data["owners"][owner_id].get("balance", 0) + prize
             
@@ -1483,8 +1480,8 @@ async def run_race_and_advance_day():
     
     winner_id = results[0]["horse_id"]
 
-    bets = data.get("bets", {})
-    for uid, b in bets.items():
+    bets_today = data.get("bets", {}).get(current_day_str, {})
+    for uid, b in bets_today.items():
         if b["horse_id"] == winner_id:
             payout = int(b["amount"] * b["odds"])
             owner = get_owner(data, uid)
