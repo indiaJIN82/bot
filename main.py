@@ -643,12 +643,12 @@ async def bet(ctx, horse_id: str, amount: int):
     await save_data(data)
 
     payout = int(amount * odds)
+    horse = data["horses"][horse_id]
+    odds_val = calculate_odds(horse)
     await ctx.reply(
-        f"🎫 **賭けを受け付けました！**\n"
-        f"馬名: {horse['name']}\n"
-        f"賭け金: {amount}\n"
+        f"🐎 {horse['name']} に賭けました\n"
+        f"金額: {amount}\n"
         f"オッズ: {odds_val} 倍\n"
-        f"的中時の払戻: {payout}"
     )
 
 @bot.command(name="odds", help="本日の出走馬オッズ一覧を表示します")
