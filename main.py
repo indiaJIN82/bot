@@ -610,8 +610,8 @@ async def bet(ctx, horse_id: str, amount: int):
         return
 
     # 所持金チェック
-    users = data.setdefault("users", {})
-    user = users.setdefault(user_id, {"balance": 0})
+    owners = data.setdefault("owners", {})
+    user = owners.setdefault(user_id, {"balance": 0})
     balance = user.get("balance", 0)
 
     if amount <= 0:
@@ -1321,11 +1321,17 @@ async def race_scheduler():
     current_day = now.day # 月の日付を「日」として使用
 
     # 1. レース告知 (RACE_TIME_JSTの1時間前)
-    if PRE_ANNOUNCE_TIME_JST.hour == current_time_jst.hour and PRE_ANNOUNCE_TIME_JST.minute == current_time_jst.minute:
+    if (
+        current_time_jst.hour == PRE_ANNOUNCE_TIME_JST.hour
+        and current_time_jst.minute == PRE_ANNOUNCE_TIME_JST.minute
+    ):
         await check_and_announce_race()
         
     # 2. レース実行 (RACE_TIME_JST)
-    if RACE_TIME_JST.hour == current_time_jst.hour and RACE_TIME_JST.minute == current_time_jst.minute:
+    if (
+        current_time_jst.hour == RACE_TIME_JST.hour
+        and current_time_jst.minute == RACE_TIME_JST.minute
+    ):
         await run_race_and_advance_day()
 
 
@@ -1471,8 +1477,8 @@ async def run_race_and_advance_day():
         # 賞金と勝利数の更新
         owner_id = entry["owner"]
         if owner_id != BOT_OWNER_ID:
-            if owner_id not in data["owners"]:
-                data["owners"][owner_id] = {"horses": [], "balance": 0, "wins": 0}
+            if owner_id not in data["owner"]:
+                data["owner"][owner_id] = {"horses": [], "balance": 0, "wins": 0}
 
             data["owners"][owner_id]["balance"] = data["owners"][owner_id].get("balance", 0) + prize
             
@@ -1495,8 +1501,8 @@ async def run_race_and_advance_day():
     for uid, b in bets.items():
         if b["horse_id"] == winner_id:
             payout = int(b["amount"] * b["odds"])
-            data["users"].setdefault(uid, {"balance":0})
-            data["users"][uid]["balance"] += payout
+            data["owners"].setdefault(uid, {"balance":0})
+            data["owners"][uid]["balance"] += payout
 
     # ------------------ 結果告知とデータ更新 ------------------
     await announce_race_results(data, race_info, results, current_day, current_month, current_year, channel, len(entries_list))
