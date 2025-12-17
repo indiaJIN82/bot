@@ -77,7 +77,7 @@ PENDING_RESETS = {}
 
 # 自動レース時刻と事前告知時刻
 RACE_TIME_JST = time(hour=19, minute=0, tzinfo=JST)
-PRE_ANNOUNCE_TIME_JST = time(hour=18, minute=48, tzinfo=JST) 
+PRE_ANNOUNCE_TIME_JST = time(hour=18, minute=0, tzinfo=JST) 
 
 # Bot馬用のオーナーID (DiscordのUIDとは異なる、集計用の特殊ID)
 BOT_OWNER_ID = "0" 
