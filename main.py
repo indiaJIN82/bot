@@ -630,11 +630,10 @@ async def bet(ctx, horse_id: str, amount: int):
     odds = calculate_odds(horse)
 
     data.setdefault("bets", {})
-    data["bets"][uid] = {
-        "horse_id": horse_id,
-        "amount": amount,
-        "odds": odds
-    }
+    day = str(data["season"]["day"])
+    data.setdefault("bets", {})
+    data["bets"].setdefault(day, {})
+    data["bets"][day][uid] = {...}
 
     owner["balance"] -= amount
     await save_data(data)
@@ -1306,8 +1305,10 @@ async def on_ready():
 
 # ----------------- タスクスケジューラ -----------------
 
-@tasks.loop(minutes=1)
-async def race_scheduler():
+@bot.event
+async def on_ready():
+    if not race_scheduler.is_running():
+        race_scheduler.start()
     now = datetime.now(JST)
     t = now.time()
 
