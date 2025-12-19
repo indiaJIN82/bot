@@ -220,12 +220,12 @@ def generate_bot_horse(existing_ids):
     horse_id = new_bot_horse_id(existing_ids)
     
     stats = {
-        "speed": random.randint(70, 100),
-        "stamina": random.randint(70, 100),
-        "temper": random.randint(60, 95),
-        "growth": random.randint(60, 95),
-        "turf_apt": random.randint(60, 95), 
-        "dirt_apt": random.randint(60, 95), 
+        "speed": random.randint(80, 100),
+        "stamina": random.randint(80, 100),
+        "temper": random.randint(70, 100),
+        "growth": random.randint(70, 100),
+        "turf_apt": random.randint(80, 95), 
+        "dirt_apt": random.randint(80, 95), 
     }
     
     bot_names = [
@@ -1478,7 +1478,9 @@ async def run_race_and_advance_day():
                  "race": race_info["name"],
                  "pos": pos,
                  "prize": prize,
-                 "date": f"{current_year}年{current_month}月{current_day}日"
+                 "day": current_day,
+                 "year": current_year,
+                 "month": current_month
              })
 
     # 処理例
