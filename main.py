@@ -247,6 +247,36 @@ def generate_bot_horse(existing_ids):
         "rest_used_day": -1 
     }
 
+def get_lower_race_entries(data, current_day_str):
+    """
+    下級レース出走条件:
+    ・GⅠの有無は不問
+    ・GⅠに登録していない馬
+    ・疲労1以下
+    ・Bot馬は除外
+    """
+    entries = []
+
+    g1_entries = set(
+        data.get("pending_entries", {}).get(current_day_str, [])
+    )
+
+    for horse_id, horse in data["horses"].items():
+        # Bot馬を除外
+        if horse.get("owner") == BOT_OWNER_ID:
+            continue
+
+        # GⅠ登録馬を除外
+        if horse_id in g1_entries:
+            continue
+
+        # 疲労条件
+        if horse.get("fatigue", 0) > 1:
+            continue
+
+        entries.append(horse_id)
+
+    return entries
 
 def calc_race_score(horse, distance, track):
     s = horse["stats"]
@@ -1381,14 +1411,12 @@ async def run_race_and_advance_day():
     
     is_g1 = bool(race_info)
     
-    if not is_g1:
-        # GⅠのない日は下級レースを実施（固定レース情報）
-        race_info = {"name": "下級レース", "distance": random.choice([1200, 1600, 2000, 2400]), "track": random.choice(["芝", "ダート"])}
-        entries_list = []
-        # 下級レースでは、疲労が少ない全ての馬が自動でエントリーされる（疲労1未満）
-        for hid, horse in data["horses"].items():
-            if horse["owner"] != BOT_OWNER_ID and horse.get("fatigue", 0) < 1:
-                entries_list.append(hid)
+    race_info = {"name": "下級レース", "distance": random.choice([1200, 1600, 2000, 2400]), "track": random.choice(["芝", "ダート"])}
+    entries_list = []
+    # 下級レースでは、疲労が少ない全ての馬が自動でエントリーされる（疲労2未満）
+    for hid, horse in data["horses"].items():
+        if horse["owner"] != BOT_OWNER_ID and horse.get("fatigue", 0) < 2:
+            entries_list.append(hid)
     else:
         # GⅠがある日
         entries_list = data.get("pending_entries", {}).get(current_day_str, [])
@@ -1448,7 +1476,15 @@ async def run_race_and_advance_day():
     
     results = []
    # レース名に応じて賞金プールを決定
-    prize_config = prize_pool_for_g1(race_info['name']) if is_g1 else prize_pool_for_lower()
+    prize_config = prize_pool_for_g1(race_info['name'])
+    if is_g1:
+        prize_config = prize_pool_for_g1(race_info["name"])
+    else:
+        # 下級レース：賞金総額 50,000（配分は自由）
+        prize_config = (
+            50000,
+            [0.5, 0.3, 0.2]  # 1～3着
+        )
     
     for i, entry in enumerate(all_entries):
         pos = i + 1
